@@ -86,6 +86,10 @@ const $hiveSwarm = atom(true) // agent-to-agent relays on/off
 const $hiveScratch = atom('') // shared team scratchpad (markdown), injected every turn
 const $hiveView = atom('timeline') // 'timeline' | 'scratch' | 'soul:<profile>'
 const $hiveCollapsed = atom(false) // pane collapsed to a slim bar
+// Live handle to re-register the pane contribution (enabled:false → paneFor()
+// returns undefined → paneGone → the zone collapses and the desktop reclaims
+// the width). Set during register().
+let hiveReRegisterPane = null
 const HIVE_PLUGIN_VERSION = 'v1.2'
 // Live per-member stream buffers for in-flight feedback.
 const $hiveStreams = atom({}) // { [profile]: { text, tool } }
@@ -1085,26 +1089,18 @@ function HivePane() {
   const members = useValue($hiveMembers)
   const title = useValue($hiveTitle)
   const view = useValue($hiveView)
-  const collapsed = useValue($hiveCollapsed)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(title)
   const commitTitle = () => { if (titleDraft.trim()) { $hiveTitle.set(titleDraft.trim().slice(0, 40)); hivePersist() } setEditingTitle(false) }
   const soulProfile = view.startsWith('soul:') ? view.slice(5) : null
-  const toggleCollapse = () => { $hiveCollapsed.set(!$hiveCollapsed.get()); hivePersist() }
-  if (collapsed) {
-    return jsxs('div', {
-      'data-hive-pane': true,
-      className: 'flex h-full flex-col bg-background',
-      style: { minHeight: 0 },
-      children: [
-        jsxs('div', { className: 'flex items-center gap-2 border-b px-2 py-1.5', children: [
-          jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Expand hive', title: 'Expand hive', onClick: toggleCollapse, children: jsx(icons.ChevronLeft, { size: 14 }) }),
-          jsx('span', { className: 'text-sm font-semibold', children: 'Hive' }),
-          jsx(Badge, { variant: 'outline', title: `${members.length + 1} members`, children: members.length + 1 }),
-          jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: title })
-        ] })
-      ]
-    })
+  // Real collapse: re-register the pane enabled:false → paneGone → the zone
+  // collapses and the desktop reclaims the width. Reopen via ⌘K → "Hive: open
+  // the agent room" (the pane is fully hidden, so there's no in-pane expand).
+  const collapsePane = () => {
+    if (hiveReRegisterPane) hiveReRegisterPane(false)
+    $hiveCollapsed.set(true)
+    hivePersist()
+    host.notify({ kind: 'info', message: 'Hive collapsed. Reopen: ⌘K → "Hive: open the agent room".' })
   }
   return jsxs('div', {
     'data-hive-pane': true,
@@ -1113,7 +1109,7 @@ function HivePane() {
     children: [
       jsxs('div', { className: 'flex items-center justify-between gap-2 border-b px-3 py-2', children: [
         jsxs('div', { className: 'flex min-w-0 items-center gap-2', children: [
-          jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Collapse hive', title: 'Collapse hive to a bar', onClick: toggleCollapse, children: jsx(icons.ChevronRight, { size: 14 }) }),
+          jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Collapse hive', title: 'Collapse hive (reclaims the panel space)', onClick: collapsePane, children: jsx(icons.ChevronRight, { size: 14 }) }),
           jsx('span', { className: 'text-sm font-semibold', children: 'Hive' }),
           editingTitle
             ? jsx(Input, { autoFocus: true, value: titleDraft, className: 'h-6 w-24 text-xs', onChange: (e) => setTitleDraft(e.target.value), onBlur: commitTitle, onKeyDown: (ev) => { if (ev.key === 'Enter') commitTitle() } })
@@ -1158,17 +1154,29 @@ export default {
     void hiveBootHydrate()
 
     const disposers = []
-    disposers.push(ctx.register({
-      id: 'pane', area: 'panes', title: 'hive',
-      data: { placement: 'right', width: '380px', minWidth: '300px', maxWidth: '560px' },
-      render: () => jsx(HivePane, {})
-    }))
+    // Re-register the pane with `enabled`. enabled:false → the registry's
+    // getArea() filters it → paneFor(id) is undefined → paneGone(id) is true →
+    // the pane's zone collapses (display:none) and the desktop reclaims the
+    // width. enabled:true → paneFor resolves → the zone returns. This is the
+    // mechanism that actually frees the real estate (not a content-only hide).
+    let paneDisposer = null
+    const registerPane = (enabled) => {
+      if (paneDisposer) { paneDisposer() }
+      paneDisposer = ctx.register({
+        id: 'pane', area: 'panes', title: 'hive', enabled,
+        data: { placement: 'right', width: '380px', minWidth: '300px', maxWidth: '560px' },
+        render: () => jsx(HivePane, {})
+      })
+    }
+    registerPane(!$hiveCollapsed.get())
+    hiveReRegisterPane = registerPane
+
     disposers.push(ctx.register({
       id: 'palette-open', area: 'palette',
       data: {
         id: 'buzz-hive-open', label: 'Hive: open the agent room',
         keywords: ['hive', 'buzz', 'room', 'agents', 'multi'],
-        run: () => host.notify({ kind: 'info', message: 'Hive room is the right-hand pane.' })
+        run: () => { registerPane(true); $hiveCollapsed.set(false); hivePersist(); host.notify({ kind: 'success', message: 'Hive room opened.' }) }
       }
     }))
 
