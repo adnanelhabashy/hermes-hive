@@ -1148,16 +1148,17 @@ export default {
     void hiveBootHydrate()
 
     const disposers = []
-    // A single always-registered `pane` (like theme-forge). Collapse is the
-    // pane-shell's NATIVE standard rail (zone-header minimize chevron → slim
-    // vertical rail with a clickable tab to restore) — not a custom rail.
+    // A single always-registered `pane`. `collapseTab: true` opts into the
+    // pane-shell's NATIVE collapse-tool-panel behaviour (terminal/logs style):
+    // the header+chevron is kept even as a lone pane, and minimize collapses
+    // to the standard slim vertical rail with a clickable tab to restore.
     // Two states only: fully expanded, or collapsed to the native rail.
     let paneDisposer = null
     const registerPane = (enabled) => {
       if (paneDisposer) { paneDisposer() }
       paneDisposer = ctx.register({
         id: 'pane', area: 'panes', title: 'hive', enabled,
-        data: { placement: 'right', width: '380px', minWidth: '300px', maxWidth: '560px' },
+        data: { placement: 'right', width: '380px', minWidth: '300px', maxWidth: '560px', collapseTab: true },
         render: () => jsx(HivePane, {})
       })
     }
