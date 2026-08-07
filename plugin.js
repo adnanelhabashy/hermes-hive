@@ -603,18 +603,25 @@ async function hiveStopMember(profile) {
 
 /** Reset the whole crew: interrupt all, clear timeline, mint fresh default. */
 async function hiveResetRoom() {
+  console.log('[buzz-hive] reset room: start')
   for (const m of $hiveMembers.get()) {
     if (m.sessionId) {
       await host.request('session.interrupt', { session_id: m.sessionId }).catch(() => {})
     }
   }
   _hiveProcessed.clear()
+  _hiveSeeded.clear()
   $hiveTimeline.set([])
   $hiveMembers.set([])
+  $hiveStreams.set({})
   $hiveSwarm.set(true)
+  $hiveView.set('timeline')
   hivePersist()
+  console.log('[buzz-hive] reset room: cleared, minting fresh @default')
   await hiveMintMember('default')
   hiveAppendTimeline({ from: 'system', kind: 'system', text: 'room reset — new crew', to: null })
+  hivePersist()
+  console.log('[buzz-hive] reset room: done')
   host.notify({ kind: 'success', message: 'Hive: room reset.' })
 }
 
@@ -852,31 +859,47 @@ function HiveComposer() {
   })
 }
 
+/** Reliable reset: header button + inline confirm popover (not inside a Radix
+ *  dropdown, which eats button clicks). */
+function HiveResetButton() {
+  const [confirming, setConfirming] = useState(false)
+  const rootRef = useRef(null)
+  useEffect(() => {
+    if (!confirming) return
+    const onDocMouse = (ev) => { if (rootRef.current && !rootRef.current.contains(ev.target)) setConfirming(false) }
+    const onKey = (ev) => { if (ev.key === 'Escape') setConfirming(false) }
+    document.addEventListener('mousedown', onDocMouse)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDocMouse); document.removeEventListener('keydown', onKey) }
+  }, [confirming])
+  return jsxs('div', { className: 'relative', ref: rootRef, children: [
+    confirming &&
+      jsx('div', { className: 'absolute right-0 top-9 z-30 w-56 rounded-lg border bg-background p-2 shadow-lg', children: jsxs('div', { className: 'flex flex-col gap-1.5', children: [
+        jsx('div', { className: 'text-xs', children: 'Reset the whole room?' }),
+        jsx('div', { className: 'text-[10px] text-muted-foreground', children: 'Interrupts all members, clears the timeline, starts a fresh @default. The shared scratchpad is kept.' }),
+        jsx('div', { className: 'flex justify-end gap-1.5', children: [
+          jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setConfirming(false), children: 'Cancel' }),
+          jsx(Button, { size: 'sm', variant: 'destructive', onClick: () => { setConfirming(false); void hiveResetRoom() }, children: 'Reset room' })
+        ] })
+      ] }) }),
+    jsx(Button, { variant: 'ghost', size: 'sm', title: 'Reset room', 'aria-label': 'Reset room', onClick: () => setConfirming((c) => !c), children: jsx(icons.Trash2, { size: 14 }) })
+  ] })
+}
+
 function HiveRoomMenu() {
   const swarm = useValue($hiveSwarm)
-  const [confirmReset, setConfirmReset] = useState(false)
   return jsx(DropdownMenu, {
     children: [
       jsx(DropdownMenuTrigger, { asChild: true, children: jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Room menu', children: jsx(icons.SlidersHorizontal, { size: 14 }) }) }),
       jsx(DropdownMenuContent, {
         align: 'end',
-        children: confirmReset
-          ? [
-              jsx('div', { className: 'px-2.5 py-1.5 text-xs', children: 'Reset the whole crew? Interrupts all members, clears history, starts a fresh @default.' }),
-              jsx('div', { className: 'flex gap-1.5 px-2.5 pb-1.5', children: [
-                jsx(Button, { size: 'sm', variant: 'default', onClick: () => { setConfirmReset(false); void hiveResetRoom() }, children: 'Reset room' }),
-                jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setConfirmReset(false), children: 'Cancel' })
-              ] })
-            ]
-          : [
-              jsx('div', { className: 'flex items-center justify-between gap-3 px-2.5 py-1.5', children: [
-                jsx('span', { className: 'text-xs', children: 'Agents talk to each other' }),
-                jsx(Switch, { checked: swarm, onCheckedChange: (v) => { $hiveSwarm.set(!!v); hivePersist() } })
-              ] }),
-              jsx('div', { className: 'px-2.5 pb-1 text-[10px] text-muted-foreground', children: swarm ? 'Relays between agents are injected live.' : 'Agents only reply to you — no inter-agent injection.' }),
-              jsx(DropdownMenuSeparator, {}),
-              jsx(DropdownMenuItem, { variant: 'destructive', onSelect: () => setConfirmReset(true), children: 'Reset room…' })
-            ]
+        children: [
+          jsx('div', { className: 'flex items-center justify-between gap-3 px-2.5 py-1.5', children: [
+            jsx('span', { className: 'text-xs', children: 'Agents talk to each other' }),
+            jsx(Switch, { checked: swarm, onCheckedChange: (v) => { $hiveSwarm.set(!!v); hivePersist() } })
+          ] }),
+          jsx('div', { className: 'px-2.5 pb-1 text-[10px] text-muted-foreground', children: swarm ? 'Relays between agents are injected live.' : 'Agents only reply to you — no inter-agent injection.' })
+        ]
       })
     ]
   })
@@ -1055,6 +1078,7 @@ function HivePane() {
         jsxs('div', { className: 'flex items-center gap-1', children: [
           jsx(Button, { variant: view === 'scratch' ? 'default' : 'ghost', size: 'sm', onClick: () => $hiveView.set(view === 'scratch' ? 'timeline' : 'scratch'), title: 'Shared team scratchpad', children: '📝' }),
           jsx(HiveAddMember, {}),
+          jsx(HiveResetButton, {}),
           jsx(HiveRoomMenu, {})
         ] })
       ] }),
