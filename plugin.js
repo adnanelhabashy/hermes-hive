@@ -27,6 +27,7 @@
  * Plain ESM, loaded uncompiled — jsx() calls, not JSX syntax.
  * v1 (restore point tagged v1-restore-point) — public repo: 0-CYBERDYNE-SYSTEMS-0/hermes-hive
  * v1.1: shared scratchpad, inline SOUL editor, add-popover close fix.
+ * v1.2: collapsible pane → slim 32px rail (chevron to re-expand, ⌘K retained).
  */
 
 import {
