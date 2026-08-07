@@ -63,6 +63,17 @@ const HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const HIVE_DEFAULT_ACCENT = 'hsl(208 72% 56%)' // stable blue for `default`
 const HIVE_SCRATCH_INJECT_MAX = 4000 // chars injected into each agent turn
 const HIVE_SCRATCH_STORE_MAX = 8000 // chars kept in the shared doc
+// Inline style tokens for sizes the frozen build CSS doesn't ship (arbitrary
+// Tailwind classes like text-[10px] / size-1.5 generate ZERO rules — audit
+// against app.asar.unpacked/dist/assets/index-*.css).
+
+const HIVE_T = Object.freeze({
+  dot: { width: 6, height: 6, borderRadius: 999, flexShrink: 0 },
+  xs: { fontSize: 10, lineHeight: '14px' },
+  xsRemoveMl: { fontSize: 10, lineHeight: '14px', marginLeft: 8 },
+  sm: { fontSize: 11, lineHeight: '15px' },
+  streamDots: { fontSize: 10, lineHeight: 0 }
+})
 
 // ── reactive state ──────────────────────────────────────────────────────────
 const $hiveMembers = atom([]) // { profile, sessionId, storedId, status, browser, muted }
@@ -689,18 +700,18 @@ function HiveRosterChip({ m }) {
             m.muted && 'opacity-60'
           ),
           children: [
-            jsx('span', { className: 'size-1.5 rounded-full', style: { background: color } }),
+            jsx('span', { className: 'rounded-full', style: { ...HIVE_T.dot, background: color } }),
             jsx('span', { style: { color }, className: 'font-medium', children: '@' + m.profile }),
             m.browser && jsx(icons.Globe, { size: 12, style: { color } }),
-            m.muted && jsx('span', { className: 'text-[9px] uppercase tracking-wide text-muted-foreground', children: 'muted' }),
-            m.status === 'streaming' && jsx('span', { className: 'animate-pulse text-[10px] leading-none', children: '…' })
+            m.muted && jsx('span', { className: 'uppercase tracking-wide text-muted-foreground', style: HIVE_T.xs, children: 'muted' }),
+            m.status === 'streaming' && jsx('span', { className: 'animate-pulse', style: HIVE_T.streamDots, children: '…' })
           ]
         })
       }),
       jsx(DropdownMenuContent, {
         align: 'start',
         children: [
-          sessionRef && jsx(DropdownMenuItem, { onSelect: () => host.navigate('/' + encodeURIComponent(sessionRef)), children: jsxs('span', { children: ['Open session', jsx('span', { className: 'ml-2 text-[10px] text-muted-foreground', children: sessionRef.slice(0, 12) + '…' })] }) }),
+          sessionRef && jsx(DropdownMenuItem, { onSelect: () => host.navigate('/' + encodeURIComponent(sessionRef)), children: jsxs('span', { children: ['Open session', jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xsRemoveMl, children: sessionRef.slice(0, 12) + '…' })] }) }),
           m.status !== 'idle' && jsx(DropdownMenuItem, { onSelect: () => void hiveStopMember(m.profile), children: 'Stop (interrupt)' }),
           jsx(DropdownMenuItem, { onSelect: () => { $hiveView.set('soul:' + m.profile); haptic('tap') }, children: 'Edit SOUL / persona' }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveToggleMute(m.profile), children: m.muted ? 'Unmute' : 'Mute' }),
@@ -729,11 +740,11 @@ function HiveMemberTone({ from, to, text, ts }) {
     className: 'group flex gap-2 rounded-md py-1 pl-1.5',
     style: isSystem ? undefined : { borderLeft: `2px solid ${accent.color}`, background: isYou ? undefined : accent.soft },
     children: isSystem
-      ? jsx('div', { className: 'text-[11px] italic leading-snug text-muted-foreground', children: text })
+      ? jsx('div', { className: 'italic leading-snug text-muted-foreground', style: HIVE_T.sm, children: text })
       : jsxs('div', { className: 'flex min-w-0 flex-col gap-0.5', children: [
-          jsxs('div', { className: 'flex items-center gap-2 text-[10px] uppercase tracking-wide', children: [
+          jsxs('div', { className: 'flex items-center gap-2 uppercase tracking-wide', style: HIVE_T.xs, children: [
             jsx('span', { style: { color: accent.color }, className: 'font-semibold', children: label }),
-            jsx('time', { className: 'text-[9px] text-muted-foreground/70', children: hiveTime(ts) })
+            jsx('time', { style: { fontSize: 9, lineHeight: '14px', color: 'rgba(128,128,128,0.65)' }, children: hiveTime(ts) })
           ] }),
           jsx('div', { className: 'min-w-0 text-sm leading-relaxed text-foreground', children: hiveRenderText(text) })
         ] })
@@ -852,7 +863,7 @@ function HiveComposer() {
         onKeyDown: (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(composer) } }
       }),
       jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
-        jsx('span', { className: 'text-[10px] text-muted-foreground', children: 'Enter ↵ send · Shift+↵ newline · @ to tag' }),
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Enter ↵ send · Shift+↵ newline · @ to tag' }),
         jsx(Button, { onClick: () => send(composer), disabled: !composer.trim(), size: 'sm', children: jsxs('span', { children: ['Send ', jsx(icons.Send, { size: 12, className: 'inline' })] }) })
       ] })
     ]
@@ -876,7 +887,7 @@ function HiveResetButton() {
     confirming &&
       jsx('div', { className: 'absolute right-0 top-9 z-30 w-56 rounded-lg border bg-background p-2 shadow-lg', children: jsxs('div', { className: 'flex flex-col gap-1.5', children: [
         jsx('div', { className: 'text-xs', children: 'Reset the whole room?' }),
-        jsx('div', { className: 'text-[10px] text-muted-foreground', children: 'Interrupts all members, clears the timeline, starts a fresh @default. The shared scratchpad is kept.' }),
+        jsx('div', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Interrupts all members, clears the timeline, starts a fresh @default. The shared scratchpad is kept.' }),
         jsx('div', { className: 'flex justify-end gap-1.5', children: [
           jsx(Button, { size: 'sm', variant: 'ghost', onClick: () => setConfirming(false), children: 'Cancel' }),
           jsx(Button, { size: 'sm', variant: 'destructive', onClick: () => { setConfirming(false); void hiveResetRoom() }, children: 'Reset room' })
@@ -898,7 +909,7 @@ function HiveRoomMenu() {
             jsx('span', { className: 'text-xs', children: 'Agents talk to each other' }),
             jsx(Switch, { checked: swarm, onCheckedChange: (v) => { $hiveSwarm.set(!!v); hivePersist() } })
           ] }),
-          jsx('div', { className: 'px-2.5 pb-1 text-[10px] text-muted-foreground', children: swarm ? 'Relays between agents are injected live.' : 'Agents only reply to you — no inter-agent injection.' })
+          jsx('div', { className: 'px-2.5 pb-1 text-muted-foreground', style: HIVE_T.xs, children: swarm ? 'Relays between agents are injected live.' : 'Agents only reply to you — no inter-agent injection.' })
         ]
       })
     ]
@@ -925,7 +936,7 @@ function HiveCreateForm({ onDone, onCancel }) {
     jsx(Input, { autoFocus: true, placeholder: 'profile-name', value: name, 'aria-invalid': invalid, onChange: (e) => setName(e.target.value), className: 'text-xs' }),
     jsx(Input, { placeholder: 'Clone from (default)', value: cloneFrom, onChange: (e) => setCloneFrom(e.target.value), className: 'text-xs' }),
     jsx(Textarea, { placeholder: 'Optional SOUL.md / persona', value: soul, rows: 2, onChange: (e) => setSoul(e.target.value), className: 'resize-none text-xs' }),
-    error && jsx('div', { className: 'text-[11px] text-destructive', children: error }),
+    error && jsx('div', { className: 'text-destructive', style: HIVE_T.sm, children: error }),
     jsxs('div', { className: 'flex items-center justify-between', children: [
       jsx(Button, { variant: 'ghost', size: 'sm', onClick: onCancel, disabled: busy, children: 'Cancel' }),
       jsx(Button, { size: 'sm', onClick: () => void submit(), disabled: busy || !trimmed, children: status === 'saving' ? 'Creating…' : 'Create & join' })
@@ -938,9 +949,9 @@ function HiveRenderOptions({ opts, onPick, onNew }) {
     opts.length ? opts.map((p) => {
       const { color } = hiveAccent(p.name)
       return jsx(Button, { key: p.name, variant: 'ghost', size: 'sm', className: 'justify-start text-xs', onClick: () => onPick(p), children: jsxs('div', { className: 'flex items-center gap-1.5', children: [
-        jsx('span', { className: 'size-1.5 rounded-full', style: { background: color } }),
+        jsx('span', { className: 'rounded-full', style: { ...HIVE_T.dot, background: color } }),
         jsx('span', { style: { color }, children: '@' + p.name }),
-        jsx('span', { className: 'text-[10px] text-muted-foreground', children: p.model || 'no model' })
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: p.model || 'no model' })
       ] }) })
     }) : jsx('div', { className: 'p-2 text-xs text-muted-foreground', children: 'Every profile is already in the room.' }),
     jsx('div', { className: 'mt-1 border-t pt-1' }),
@@ -984,7 +995,7 @@ function HiveAddMember() {
         : jsxs('div', { className: 'flex flex-col gap-1.5', children: [
             jsx(Input, { autoFocus: true, placeholder: 'Search profiles…', value: q, onChange: (e) => setQ(e.target.value), className: 'mb-1 text-xs' }),
             loadState === 'error'
-              ? jsx('div', { className: 'flex items-center justify-between p-1', children: [jsx('span', { className: 'text-[11px] text-muted-foreground', children: 'Couldn’t load profiles.' }), jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => { load(); setOpen(true) }, children: 'Retry' })] })
+              ? jsx('div', { className: 'flex items-center justify-between p-1', children: [jsx('span', { className: 'text-muted-foreground', style: HIVE_T.sm, children: 'Couldn’t load profiles.' }), jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => { load(); setOpen(true) }, children: 'Retry' })] })
               : jsx(HiveRenderOptions, { opts, onPick: pick, onNew: () => setCreating(true) })
           ] })
     ] }),
@@ -1000,7 +1011,7 @@ function HiveScratchEditor() {
   return jsxs('div', { className: 'flex h-full min-h-0 flex-col gap-2 p-2', 'data-hive-scratch': true, children: [
     jsxs('div', { className: 'flex items-center justify-between text-xs', children: [
       jsx('span', { className: 'font-medium', children: 'Shared scratchpad' }),
-      jsx('span', { className: 'text-[10px] text-muted-foreground', children: `${len} chars · injected every turn · agents append with [scratchpad]` })
+      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `${len} chars · injected every turn · agents append with [scratchpad]` })
     ] }),
     jsx(Textarea, {
       value: draft,
@@ -1037,7 +1048,7 @@ function HiveSoulEditor({ profile }) {
       jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => $hiveView.set('timeline'), children: 'Back' })
     ] }),
     hint &&
-      jsx('div', { className: 'rounded-md border border-primary/30 bg-primary/5 p-1.5 text-[10px] text-muted-foreground', children: '✓ Scratchpad pointer is in this SOUL.' }),
+      jsx('div', { className: 'rounded-md border p-1.5 text-muted-foreground', style: { ...HIVE_T.xs, borderColor: 'rgba(128,128,128,0.3)', background: 'rgba(128,128,128,0.08)' }, children: '✓ Scratchpad pointer is in this SOUL.' }),
     loaded
       ? jsx(Textarea, {
           value: draft,
@@ -1046,7 +1057,7 @@ function HiveSoulEditor({ profile }) {
           placeholder: '(blank SOUL — add a persona here, then remember it to drive the room)'
         })
       : jsx('div', { className: 'p-4 text-xs text-muted-foreground', children: 'Loading…' }),
-    error && jsx('div', { className: 'text-[11px] text-destructive', children: error }),
+    error && jsx('div', { className: 'text-destructive', style: HIVE_T.sm, children: error }),
     jsxs('div', { className: 'flex items-center justify-between gap-1.5', children: [
       jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => { setDraft((d) => { const cur = d.trim() ? d + '\n\n' : ''; return cur + HIVE_SOUL_SCRATCH_HINT }); setHint(true) }, title: 'Adds a pointer to the shared scratchpad', children: 'Insert scratchpad pointer' }),
       jsx(Button, { size: 'sm', onClick: async () => { try { await hiveUpdateSoul(profile, draft); host.notify({ kind: 'success', message: `@${profile} SOUL saved.` }); $hiveView.set('timeline') } catch (e) { setError((e && e.message) || 'Save failed') } }, children: 'Save SOUL' })
@@ -1086,7 +1097,7 @@ function HivePane() {
         jsx('div', { className: 'flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs select-none opacity-90', 'data-role': 'you', children: [
           jsx(StatusDot, { tone: 'good' }),
           jsx('span', { className: 'font-semibold', children: 'you' }),
-          jsx('span', { className: 'text-[10px] text-muted-foreground', children: '(always delivers)' })
+          jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: '(always delivers)' })
         ] }),
         members.map((m) => jsx(HiveRosterChip, { key: m.profile, m }))
       ] }),
