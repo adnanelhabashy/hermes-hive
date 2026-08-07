@@ -28,6 +28,9 @@
  * v1 (restore point tagged v1-restore-point) — public repo: 0-CYBERDYNE-SYSTEMS-0/hermes-hive
  * v1.1: shared scratchpad, inline SOUL editor, add-popover close fix.
  * v1.2: collapsible pane → slim 32px rail (chevron to re-expand, ⌘K retained).
+ * v1.3: collapse = pane-shell NATIVE zone minimize (standard vertical rail with
+ *   a clickable tab to restore), matching theme-forge. Removed the custom 32px
+ *   rail — one pane, always registered; two states only (expanded / native rail).
  */
 
 import {
@@ -86,12 +89,12 @@ const $hiveMentionOpen = atom('') // autocomplete filter when composing @name
 const $hiveSwarm = atom(true) // agent-to-agent relays on/off
 const $hiveScratch = atom('') // shared team scratchpad (markdown), injected every turn
 const $hiveView = atom('timeline') // 'timeline' | 'scratch' | 'soul:<profile>'
-const $hiveCollapsed = atom(false) // pane collapsed to a slim rail
-// Live handle to toggle the pane between the full pane and a slim rail
-// (enabled triage → paneFor() undefined → the zone collapses/re-sizes). Set
-// during register().
+// Collapse/expand is the pane-shell's NATIVE zone minimize (the standard
+// slim vertical rail with a clickable tab), not a plugin-managed rail. The
+// pane is always registered. This handle lets internal callers (reset,
+// palette open) re-assert the pane is present; it never adds a custom rail.
 let hiveSetCollapsed = null
-const HIVE_PLUGIN_VERSION = 'v1.2'
+const HIVE_PLUGIN_VERSION = 'v1.3'
 // Live per-member stream buffers for in-flight feedback.
 const $hiveStreams = atom({}) // { [profile]: { text, tool } }
 // Completion dedup: session -> last-processed timestamp.
@@ -645,7 +648,6 @@ async function hiveResetRoom() {
   $hiveStreams.set({})
   $hiveSwarm.set(true)
   $hiveView.set('timeline')
-  $hiveCollapsed.set(false)
   if (hiveSetCollapsed) hiveSetCollapsed(false)
   hivePersist()
   console.log('[buzz-hive] reset room: cleared, minting fresh @default')
@@ -665,7 +667,6 @@ function hivePersist() {
     cwd: $hiveCwd.get(),
     swarm: $hiveSwarm.get(),
     scratch: $hiveScratch.get(),
-    collapsed: $hiveCollapsed.get(),
     members: $hiveMembers.get().map((m) => ({ profile: m.profile, storedId: m.storedId, browser: m.browser, muted: m.muted })),
     timeline: $hiveTimeline.get().slice(-120)
   })
@@ -683,7 +684,6 @@ async function hiveBootHydrate() {
   $hiveCwd.set(saved.cwd || '')
   $hiveSwarm.set(typeof saved.swarm === 'boolean' ? saved.swarm : true)
   if (typeof saved.scratch === 'string') $hiveScratch.set(saved.scratch)
-  if (typeof saved.collapsed === 'boolean') $hiveCollapsed.set(saved.collapsed)
   if (Array.isArray(saved.timeline)) $hiveTimeline.set(saved.timeline.slice(-120))
   const hydrated = []
   for (const m of saved.members) {
@@ -1087,26 +1087,7 @@ function HiveSoulEditor({ profile }) {
   ] })
 }
 
-/** Slim 32px rail shown when the hive is collapsed — a visible chevron +
- *  vertical label to re-expand (the full pane is hidden, so the rail is the
- *  only affordance besides the ⌘K palette command). */
-function HiveRail() {
-  const members = useValue($hiveMembers)
-  const expand = () => { if (hiveSetCollapsed) hiveSetCollapsed(false); $hiveCollapsed.set(false); hivePersist() }
-  const streaming = members.some((m) => m.status === 'streaming')
-  return jsx('button', {
-    'data-hive-rail': true,
-    className: 'flex h-full w-full cursor-pointer flex-col items-center gap-2 border-r bg-background',
-    title: 'Expand hive',
-    'aria-label': 'Expand hive',
-    onClick: expand,
-    children: [
-      jsx(icons.ChevronLeft, { size: 14, className: 'mt-2 text-muted-foreground' }),
-      jsx('span', { className: 'text-muted-foreground', style: { writingMode: 'vertical-rl', fontSize: 10, letterSpacing: '0.12em' }, children: 'Hive' }),
-      jsx(StatusDot, { tone: streaming ? 'warn' : 'good' })
-    ]
-  })
-}
+
 
 function HivePane() {
   const members = useValue($hiveMembers)
@@ -1116,14 +1097,6 @@ function HivePane() {
   const [titleDraft, setTitleDraft] = useState(title)
   const commitTitle = () => { if (titleDraft.trim()) { $hiveTitle.set(titleDraft.trim().slice(0, 40)); hivePersist() } setEditingTitle(false) }
   const soulProfile = view.startsWith('soul:') ? view.slice(5) : null
-  // Collapse to a slim rail: hide the full 380px pane, show the 32px rail
-  // (ChevronLeft) so the desktop reclaims ~348px but a visible chevron stays
-  // to re-expand — the user can always get back without ⌘K.
-  const collapsePane = () => {
-    if (hiveSetCollapsed) hiveSetCollapsed(true)
-    $hiveCollapsed.set(true)
-    hivePersist()
-  }
   return jsxs('div', {
     'data-hive-pane': true,
     className: 'flex h-full flex-col bg-background',
@@ -1131,7 +1104,6 @@ function HivePane() {
     children: [
       jsxs('div', { className: 'flex items-center justify-between gap-2 border-b px-3 py-2', children: [
         jsxs('div', { className: 'flex min-w-0 items-center gap-2', children: [
-          jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Collapse hive', title: 'Collapse hive (reclaims the panel space)', onClick: collapsePane, children: jsx(icons.ChevronRight, { size: 14 }) }),
           jsx('span', { className: 'text-sm font-semibold', children: 'Hive' }),
           editingTitle
             ? jsx(Input, { autoFocus: true, value: titleDraft, className: 'h-6 w-24 text-xs', onChange: (e) => setTitleDraft(e.target.value), onBlur: commitTitle, onKeyDown: (ev) => { if (ev.key === 'Enter') commitTitle() } })
@@ -1176,13 +1148,11 @@ export default {
     void hiveBootHydrate()
 
     const disposers = []
-    // Two contributions: the full `pane` (380px) and a slim `pane-rail` (32px,
-    // chevron to re-expand). Toggling `enabled` makes the registry's getArea()
-    // include/exclude each → paneFor() resolves/not → the zone grows to the
-    // shown pane's width or collapses. Only one shows at a time. This is what
-    // gives a visible re-expand affordance AND returns ~348px when collapsed.
+    // A single always-registered `pane` (like theme-forge). Collapse is the
+    // pane-shell's NATIVE standard rail (zone-header minimize chevron → slim
+    // vertical rail with a clickable tab to restore) — not a custom rail.
+    // Two states only: fully expanded, or collapsed to the native rail.
     let paneDisposer = null
-    let railDisposer = null
     const registerPane = (enabled) => {
       if (paneDisposer) { paneDisposer() }
       paneDisposer = ctx.register({
@@ -1191,26 +1161,16 @@ export default {
         render: () => jsx(HivePane, {})
       })
     }
-    const registerRail = (enabled) => {
-      if (railDisposer) { railDisposer() }
-      railDisposer = ctx.register({
-        id: 'pane-rail', area: 'panes', title: 'hive', enabled,
-        data: { placement: 'right', width: '32px', minWidth: '32px', maxWidth: '32px' },
-        render: () => jsx(HiveRail, {})
-      })
-    }
-    // Collapse swaps pane ↔ rail: the full pane closes, the slim rail stays
-    // as the visible (ChevronLeft) expand affordance.
-    const setCollapsed = (c) => { registerPane(!c); registerRail(c) }
-    setCollapsed($hiveCollapsed.get())
-    hiveSetCollapsed = setCollapsed
+    // Always present; collapse/expand is the pane-shell's native zone toggle.
+    registerPane(true)
+    hiveSetCollapsed = (c) => { registerPane(true) }
 
     disposers.push(ctx.register({
       id: 'palette-open', area: 'palette',
       data: {
         id: 'buzz-hive-open', label: 'Hive: open the agent room',
         keywords: ['hive', 'buzz', 'room', 'agents', 'multi'],
-        run: () => { hiveSetCollapsed(false); $hiveCollapsed.set(false); hivePersist(); host.notify({ kind: 'success', message: 'Hive room opened.' }) }
+        run: () => { hiveSetCollapsed(false); hivePersist(); host.notify({ kind: 'success', message: 'Hive room opened.' }) }
       }
     }))
 
