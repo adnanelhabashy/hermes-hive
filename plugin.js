@@ -25,6 +25,7 @@
  *
  * Save as: ~/.hermes/desktop-plugins/buzz-hive/plugin.js
  * Plain ESM, loaded uncompiled — jsx() calls, not JSX syntax.
+ * v1 (restore point tagged v1-restore-point) — public repo: 0-CYBERDYNE-SYSTEMS-0/buzz-hive
  */
 
 import {
