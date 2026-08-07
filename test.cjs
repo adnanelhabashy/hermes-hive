@@ -18,7 +18,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 
 // HIVE_DIGEST_LEN is defined above the markers; inject it for the sliced scope.
 const factory = new Function(
-  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries }`
+  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession }`
 )
 const {
   hiveParseCoordination,
@@ -28,7 +28,8 @@ const {
   hiveExtractMentions,
   hiveNormalize,
   hiveIsValidProfileName,
-  hiveExtractScratchEntries
+  hiveExtractScratchEntries,
+  hiveIsMemberSession
 } = factory()
 
 let pass = 0
@@ -163,6 +164,16 @@ console.log('hiveExtractScratchEntries')
   deep('multiple entries', hiveExtractScratchEntries('[scratchpad] a [scratchpad] b'), ['a', 'b'])
   deep('no entry', hiveExtractScratchEntries('just a normal reply'), [])
   assert('relay stays out of scratch extraction', hiveExtractScratchEntries('[to @builder] check this').length === 0)
+}
+
+console.log('hiveIsMemberSession (strict session isolation)')
+{
+  const member = { profile: 'default', sessionId: 'hive-session-1' }
+  assert('matches same session', hiveIsMemberSession(member, 'hive-session-1') === true)
+  assert('REGRESSION: same profile, different session → must NOT match', hiveIsMemberSession(member, 'main-chat-session') === false)
+  assert('different profile, different session → no match', hiveIsMemberSession({ ...member, profile: 'other' }, 'x') === false)
+  assert('null session id → no match', hiveIsMemberSession(member, null) === false)
+  assert('null member → no match', hiveIsMemberSession(null, 'hive-session-1') === false)
 }
 
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))

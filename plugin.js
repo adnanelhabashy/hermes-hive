@@ -237,6 +237,13 @@ function hiveExtractScratchEntries(content) {
   return out
 }
 
+/** Pure strict-match predicate: does a member own this session? NEVER match on
+ *  profile — the main desktop chat shares a profile with hive members, so a
+ *  profile fallback leaks main-chat events into the room (regression-tested). */
+function hiveIsMemberSession(m, sessionId) {
+  return !!(sessionId && m && m.sessionId === sessionId)
+}
+
 // --CORE-END--
 
 // ── accents ─────────────────────────────────────────────────────────────────
@@ -308,11 +315,16 @@ function hiveStatusForEvent(e) {
   return null
 }
 
-function hiveMemberBySession(sessionId, profile) {
+/** Strict session routing: a member is identified by its OWN session id ONLY.
+ *  Never match by profile name — the main desktop chat runs on the same
+ *  profile as a hive member, so a profile fallback leaks main-chat stream
+ *  events into the hive (confirmed bug). Events without a session_id belong to
+ *  the focused chat (per app gateway-events.ts), so a null-session member never
+ *  attributes stray events. */
+function hiveMemberBySession(sessionId) {
+  if (!sessionId) return undefined
   const list = $hiveMembers.get()
-  return list.find(
-    (m) => m.sessionId === sessionId || (profile && hiveNormalize(m.profile) === hiveNormalize(profile))
-  )
+  return list.find((m) => hiveIsMemberSession(m, sessionId))
 }
 
 async function hiveDeliverTo(member, text, opts = {}) {
@@ -442,11 +454,10 @@ async function hiveHandleFallbackCompleted(e) {
   await hiveHandleAssistantDone(e, content)
 }
 
-function hiveMarkStatus(sessionId, profile, status) {
+function hiveMarkStatus(sessionId, status) {
+  if (!sessionId) return
   const list = $hiveMembers.get()
-  const idx = list.findIndex(
-    (m) => m.sessionId === sessionId || (profile && hiveNormalize(m.profile) === hiveNormalize(profile))
-  )
+  const idx = list.findIndex((m) => m.sessionId === sessionId)
   if (idx !== -1 && list[idx].status !== status) {
     const next = list.slice()
     next[idx] = { ...next[idx], status }
