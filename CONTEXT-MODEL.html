@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hive Skills &amp; Context — The Right Model</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2b3443;
+    --fg:#e6edf3; --mut:#8b949e; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --red:#f85149; --purple:#bc8cff; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:40px 20px}
+  .wrap{max-width:920px;margin:0 auto}
+  h1{font-size:28px;letter-spacing:-.5px;margin-bottom:6px}
+  h1 .q{color:var(--accent)}
+  .sub{color:var(--mut);margin-bottom:28px;border-bottom:1px solid var(--line);padding-bottom:18px}
+  h2{font-size:19px;margin:34px 0 12px;letter-spacing:-.2px}
+  h2 .n{color:var(--accent);font-family:var(--mono);font-size:15px;margin-right:8px}
+  h3{font-size:15px;margin:18px 0 8px}
+  p{margin-bottom:10px;color:var(--fg)}
+  .mut{color:var(--mut)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  .pill{display:inline-block;font-family:var(--mono);font-size:12px;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--mut);margin:2px 4px 2px 0}
+  .pill.g{color:var(--green);border-color:#238636} .pill.a{color:var(--accent);border-color:#1f6feb}
+  .pill.p{color:var(--purple);border-color:#8957e5} .pill.r{color:var(--red);border-color:#da3633}
+  .kbd{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 12px;border:1px solid var(--line);vertical-align:top}
+  th{background:var(--panel2);font-weight:600}
+  td.hi{color:var(--green);font-weight:600}
+  .tag{font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;padding:2px 8px;border-radius:5px}
+  .tag.yes{background:#123a1f;color:var(--green)} .tag.no{background:#3a1515;color:var(--red)}
+  .tag.mix{background:#3a2a10;color:var(--amber)}
+  .callout{border-left:3px solid var(--accent);background:var(--panel2);padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+  .callout.g{border-color:var(--green)} .callout.a{border-color:var(--accent)} .callout.r{border-color:var(--red)}
+  .callout b{color:var(--accent)}
+  .callout.g b{color:var(--green)}
+  ul{margin:6px 0 12px 20px} li{margin:5px 0}
+  .tier{border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}
+  .tier .hd{padding:10px 16px;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px}
+  .tier .bd{padding:12px 16px;font-size:13.5px;color:var(--mut)}
+  .t1 .hd{background:#10243a} .t2 .hd{background:#1c2330} .t3 .hd{background:#2a1a3a}
+  .t1 .hd{color:var(--accent)} .t2 .hd{color:var(--fg)} .t3 .hd{color:var(--purple)}
+  .arrow{text-align:center;color:var(--mut);font-size:18px;margin:2px 0}
+  .verdict{font-size:16px;font-weight:700;color:var(--green);margin:6px 0}
+  .frac{font-family:var(--mono);font-size:12px;color:var(--mut)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:700px){.grid{grid-template-columns:1fr}}
+  .src{font-size:12px;color:var(--mut);font-family:var(--mono)}
+  code{font-family:var(--mono);font-size:13px;background:var(--panel2);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Hive Skills &amp; Context — <span class="q">The Right Model</span></h1>
+  <div class="sub">Should all hive agents share ONE skills folder? How to give them the <b>least context, most capability</b> — grounded in research + Hermes mechanics.</div>
+
+  <!-- ============ THE KEY INSIGHT ============ -->
+  <h2><span class="n">01</span>The thing most people miss: Hermes skills are <em>lazy-loaded</em></h2>
+  <div class="callout a">
+    A skills folder does <b>not</b> dump every skill's content into every turn. Each turn only carries a <b>tiny index</b> — skill <i>name</i> + a ~57-char description. The full <code>SKILL.md</code> body loads <b>only when the agent calls <code>skill_view</code></b> and actually needs it.
+  </div>
+  <div class="card">
+    <p><b>So "sharing the full skills folder" costs far less than you'd fear.</b> The real per-turn cost is the <b>index</b> (name + description per skill), not the bodies. The bodies are pulled on demand, like a library you browse rather than a book you carry.</p>
+    <p class="mut">The catch: a <b>big index is still a tax on attention</b>. ~150 skills × ~50 tokens ≈ 7,500 tokens of pure menu every turn — and every token depletes the model's attention budget (Anthropic: "context rot").</p>
+  </div>
+
+  <!-- ============ RESEARCH ============ -->
+  <h2><span class="n">02</span>What the research says</h2>
+  <table>
+    <tr><th>Finding</th><th>Source</th><th>Implication for us</th></tr>
+    <tr><td>Context is a finite attention budget; recall degrades as tokens grow (<b>context rot</b>).</td><td class="src">Anthropic, "Effective context engineering"</td><td>Keep the always-on index tight; push detail to on-demand loading.</td></tr>
+    <tr><td>Good context engineering = "the <b>smallest possible set of high-signal tokens</b>."</td><td class="src">Anthropic</td><td>Curate the shared index; don't ship all 150 skills as the default menu.</td></tr>
+    <tr><td><b>Tool-selection accuracy drops</b> as the catalog grows beyond the low-teens.</td><td class="src">Anthropic + Vercel</td><td>A giant skill menu increases wrong-skill picks. Split by specialty.</td></tr>
+    <tr><td>Multi-agent uses <b>~15× tokens</b>; token use drives <b>80% of performance variance</b>.</td><td class="src">Vercel / Anthropic production data</td><td>Every redundant skill in a hive turn is amplified ×N agents. Tightness pays.</td></tr>
+    <tr><td><b>Context isolation matters more than raw capability</b>; each agent should hold a <b>scoped slice</b> + <b>bounded tool catalog</b>.</td><td class="src">Vercel</td><td>Shared base + per-role specialty = the sweet spot, not one giant dump.</td></tr>
+    <tr><td><b>36.9% of production failures</b> trace to inter-agent misalignment at handoffs.</td><td class="src">NeurIPS 2025 trace study</td><td>Agent→agent handoffs must be <b>small, explicit, scoped</b> — which is exactly the hive's <code>[to @x]</code> + digest + scratchpad.</td></tr>
+  </table>
+
+  <!-- ============ THE MODEL ============ -->
+  <h2><span class="n">03</span>The model: three layers, not one or the other</h2>
+  <p class="mut">The answer to "share one folder or not" is <b>both, deliberately tiered</b>. Capability comes from the shared base; focus comes from per-role specialization; shared working state comes from the hive itself.</p>
+
+  <div class="tier t1">
+    <div class="hd">🟦 LAYER 1 — Shared Fleet Base <span class="tag yes">SHARED</span></div>
+    <div class="bd">
+      One curated folder of <b>~15–25 universal skills</b> every agent might reach for: <span class="pill g">pdf</span><span class="pill g">docx</span><span class="pill g">web-extract</span><span class="pill g">email</span><span class="pill g">stripe</span><span class="pill g">terminal-patterns</span> …
+      <br><b>Why:</b> "lightest yet most capable" — this is the answer to your question. Small index (low attention tax), full bodies on demand (full capability). Agents share a <b>vocabulary</b> (both know <code>pdf-engine</code>), so agent→agent instructions can reference skills by name.
+    </div>
+  </div>
+  <div class="arrow">↑ per-profile override</div>
+  <div class="tier t2">
+    <div class="hd">⬛ LAYER 2 — Per-Role Specialty <span class="tag mix">CURATED PER PROFILE</span></div>
+    <div class="bd">
+      Each agent keeps its own <b>role skills</b>, matching its job: <span class="pill p">@closer → outreach</span><span class="pill p">@builder → code-review</span><span class="pill p">@analyst → research/llm-wiki</span>
+      <br><b>Why:</b> bounds each agent's menu to its specialty (Vercel: "bounded per agent, split by specialty"). Keeps selection accurate and the menu small. Role skills are <i>already</i> wired per-profile in Hermes.
+    </div>
+  </div>
+  <div class="arrow">↑ shared working memory</div>
+  <div class="tier t3">
+    <div class="hd">🟪 LAYER 3 — Hive Working Memory <span class="tag yes">SHARED (dynamic)</span></div>
+    <div class="bd">
+      The hive's <b>digest + shared scratchpad</b> — injected every turn, capped, append-only.
+      <br><b>Why:</b> this is where "agents take scoped instructions from other agents" actually lives. It's the <b>dynamic</b> shared context that adapts to the mission, instead of a static skill dump. Small, explicit, current — not a library.
+    </div>
+  </div>
+
+  <!-- ============ TRADEOFF TABLE ============ -->
+  <h2><span class="n">04</span>Share one folder vs. curated tiers — the honest tradeoff</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>One shared folder (all 150) <span class="tag no">WORSE</span></h3>
+      <ul>
+        <li><span class="hi">+</span> Every agent has every capability</li>
+        <li><span class="hi">+</span> Zero team-setup config</li>
+        <li class="mut">– Huge index tax every turn (×N agents = amplified)</li>
+        <li class="mut">– Selection accuracy drops → wrong-skill picks</li>
+        <li class="mut">– Collision risk (pdf vs pdf-engine vs pdf-generator)</li>
+        <li class="mut">– "Context rot" — noise crowds signal</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Curated tiers (base + role + hive) <span class="tag yes">BEST</span></h3>
+      <ul>
+        <li><span class="hi">+</span> Full capability where it matters (shared base)</li>
+        <li><span class="hi">+</span> Small, accurate menu per agent (role skills)</li>
+        <li><span class="hi">+</span> Shared, adaptive state (hive scratchpad)</li>
+        <li><span class="hi">+</span> Shared vocabulary for agent→agent handoffs</li>
+        <li class="mut">– One-time curation cost (pick the ~20 base)</li>
+        <li class="mut">– Naming discipline required</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ VERDICT ============ -->
+  <h2><span class="n">05</span>Verdict</h2>
+  <div class="callout g">
+    <div class="verdict">Yes to sharing — but a curated "fleet base" (~20 skills), not the full 150-skill dump.</div>
+    <p>Sharing is <b>right</b> because skills are lazy-loaded: the bodies are free per-turn, and the shared index gives every agent a common vocabulary so agent→agent instructions can name skills precisely. But the <b>index must stay tight</b>, because attention is the real currency and a 150-item menu degrades selection (Anthropic) and costs ~15× in multi-agent setups (Vercel).</p>
+    <p>The deeper unlock — your instinct, confirmed by the research — is that <b>agent→agent instruction is the new context</b>: a tightly-scoped handoff from <code>@builder</code> to <code>@researcher</code> carries more usable signal than a huge static prompt. The hive's relay grammar + digest + scratchpad <em>are</em> this mechanism, and they're already built.</p>
+  </div>
+
+  <!-- ============ HANDSHAKE ============ -->
+  <h2><span class="n">06</span>What this means for the hive (concrete)</h2>
+  <div class="card">
+    <ul>
+      <li><b>Shared base folder</b> → point hive members at one curated <span class="kbd">~/.hermes/skills/fleet/</span> (or a shared skills dir) so they all see the same ~20 universal skills.</li>
+      <li><b>Role skills stay per-profile</b> → each agent keeps its specialty; the base stays universal.</li>
+      <li><b>Hive handoff discipline</b> → teach agents (already in the room brief): when you relay to a teammate, include a <b>1–3 line status + what you need</b>, never a raw dump. Small handoffs = fewer failures (36.9% stat).</li>
+      <li><b>Scratchpad = shared working memory</b> → keep it capped (we cap at 8k) and current; it's the dynamic context that replaces static bloat.</li>
+      <li><b>Index hygiene</b> → skill descriptions should be action-prefixed ("Use when…") and ≤57 chars, so selection is accurate.</li>
+      <li><b>On-demand, not everything</b> → agents load skills lazily via <code>skill_view</code>; never assume the full folder is "in context."</li>
+    </ul>
+  </div>
+
+  <div class="sub" style="margin-top:26px;border-top:1px solid var(--line);padding-top:14px">
+    Sources: <span class="src">Anthropic — "Effective context engineering for AI agents" (Sep 2025) · Vercel — "Multi-agent systems architecture" (Aug 2026) · NeurIPS 2025 trace analysis (1,600+ traces, 7 frameworks)</span>
+  </div>
+
+</div>
+</body>
+</html>
