@@ -40,7 +40,7 @@ native concurrent per-profile sockets.
 ## 📦 Install
 
 ```bash
-git clone https://github.com/0-CYBERDYNE-SYSTEMS-0/buzz-hive.git ~/.hermes/desktop-plugins/buzz-hive
+git clone https://github.com/0-CYBERDYNE-SYSTEMS-0/hermes-hive.git ~/.hermes/desktop-plugins/buzz-hive
 ```
 
 Then in the Hermes desktop app: the pane appears on the right within ~10s

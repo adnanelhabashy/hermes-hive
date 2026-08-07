@@ -25,7 +25,7 @@
  *
  * Save as: ~/.hermes/desktop-plugins/buzz-hive/plugin.js
  * Plain ESM, loaded uncompiled — jsx() calls, not JSX syntax.
- * v1 (restore point tagged v1-restore-point) — public repo: 0-CYBERDYNE-SYSTEMS-0/buzz-hive
+ * v1 (restore point tagged v1-restore-point) — public repo: 0-CYBERDYNE-SYSTEMS-0/hermes-hive
  * v1.1: shared scratchpad, inline SOUL editor, add-popover close fix.
  */
 
