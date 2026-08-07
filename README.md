@@ -31,6 +31,9 @@ native concurrent per-profile sockets.
 - **Shared team scratchpad** 📝 — a markdown doc every member sees in context on
   every turn. Record progress and shared facts; agents append via `[scratchpad]`.
   It's the room's working memory.
+- **Shared fleet base** 🧰 — a curated `~/.hermes/fleet/` of ~23 universal skills
+  (PDF, docx, xlsx, code-review, agentmail, …) shared **by file-symlink** across
+  all profiles — full capability, zero copies. See `SPEC-SHARED-FLEET.md`.
 - **Inline SOUL editing** — edit any member's persona from its chip menu,
   with a one-click "insert scratchpad pointer" so the shared doc is permanent
   context.
