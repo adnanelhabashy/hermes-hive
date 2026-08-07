@@ -60,6 +60,8 @@ const HIVE_DIGEST_LEN = 12
 const HIVE_STORAGE_KEY = 'hive.v1'
 const HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const HIVE_DEFAULT_ACCENT = 'hsl(208 72% 56%)' // stable blue for `default`
+const HIVE_SCRATCH_INJECT_MAX = 4000 // chars injected into each agent turn
+const HIVE_SCRATCH_STORE_MAX = 8000 // chars kept in the shared doc
 
 // ── reactive state ──────────────────────────────────────────────────────────
 const $hiveMembers = atom([]) // { profile, sessionId, storedId, status, browser, muted }
@@ -69,6 +71,8 @@ const $hiveCwd = atom('')
 const $hiveComposer = atom('')
 const $hiveMentionOpen = atom('') // autocomplete filter when composing @name
 const $hiveSwarm = atom(true) // agent-to-agent relays on/off
+const $hiveScratch = atom('') // shared team scratchpad (markdown), injected every turn
+const $hiveView = atom('timeline') // 'timeline' | 'scratch' | 'soul:<profile>'
 // Live per-member stream buffers for in-flight feedback.
 const $hiveStreams = atom({}) // { [profile]: { text, tool } }
 // Completion dedup: session -> last-processed timestamp.
@@ -164,6 +168,10 @@ function hiveBuildRoomBrief(member, members, title, isBrowserAgent, timeline) {
     `- Address the whole room:       [all] message\n` +
     `- No marker = the message is addressed to you; answer it.\n` +
     `- Never invent teammates; use only the roster above.\n` +
+    `\nSHARED SCRATCHPAD:\n` +
+    `You have a shared team scratchpad (markdown) included in every message you receive.\n` +
+    `Use it to record progress, decisions, and shared facts the team needs. Keep it concise and current.\n` +
+    `To update it for the team, start a line with [scratchpad] followed by the markdown entry you want appended.\n` +
     `\nROOM DIGEST (latest state):\n${digest}`
   )
 }
@@ -203,6 +211,18 @@ function hiveRouteUserPost(text, members) {
 /** Mirrors the app's CreateProfileDialog name validation. */
 function hiveIsValidProfileName(name) {
   return HIVE_PROFILE_NAME_RE.test((name || '').trim())
+}
+
+/** Extract `[scratchpad] …` blocks from an agent's finished output. */
+function hiveExtractScratchEntries(content) {
+  const out = []
+  const re = /\[scratchpad\]\s*([\s\S]*?)(?=\[scratchpad\]|$)/g
+  let m
+  while ((m = re.exec(content || '')) !== null) {
+    const t = m[1].trim()
+    if (t) out.push(t)
+  }
+  return out
 }
 
 // --CORE-END--
@@ -291,8 +311,12 @@ async function hiveDeliverTo(member, text, opts = {}) {
     })
     return
   }
+  const scratch = $hiveScratch.get()
+  const scratchSection = scratch
+    ? `\n\n[team scratchpad — shared, keep current]\n${scratch.length > HIVE_SCRATCH_INJECT_MAX ? scratch.slice(0, HIVE_SCRATCH_INJECT_MAX) + '\n…(truncated)' : scratch}`
+    : ''
   const payload =
-    `[room digest]\n${hiveBuildDigest($hiveTimeline.get(), HIVE_DIGEST_LEN)}\n\n` +
+    `[room digest]\n${hiveBuildDigest($hiveTimeline.get(), HIVE_DIGEST_LEN)}${scratchSection}\n\n` +
     (opts.from ? `from @${opts.from}:\n` : '') +
     text
   const busy = member.status === 'streaming' || member.status === 'thinking'
@@ -328,6 +352,22 @@ function hiveAppendTimeline(msg) {
   $hiveTimeline.set([...t, { id: Math.random().toString(36).slice(2, 9), ts: Date.now(), ...msg }].slice(-200))
 }
 
+/** Append a dated agent entry to the shared scratchpad (agents can't wipe it). */
+function hiveAppendScratch(profile, entry) {
+  const entryText = (entry || '').trim()
+  if (!entryText) return
+  const stamp = hiveTime(Date.now())
+  const block = `\n\n## @${hiveNormalize(profile)} · ${stamp}\n${entryText}`
+  const base = $hiveScratch.get()
+  let next = base.trim() ? base + block : `# Hive scratchpad\n\n## @${hiveNormalize(profile)} · ${stamp}\n${entryText}`
+  if (next.length > HIVE_SCRATCH_STORE_MAX) {
+    next = '…(older entries trimmed)\n' + next.slice(next.length - HIVE_SCRATCH_STORE_MAX)
+  }
+  $hiveScratch.set(next)
+  hiveAppendTimeline({ from: 'system', kind: 'system', text: `📝 @${profile} updated the shared scratchpad`, to: null })
+  hivePersist()
+}
+
 /** Process a member's finished turn: render, relay (swarm-gated), broadcast. */
 async function hiveHandleAssistantDone(e, content) {
   const member = hiveMemberBySession(e.session_id, e.profile)
@@ -349,9 +389,14 @@ async function hiveHandleAssistantDone(e, content) {
   const finalText = (content || '').trim()
   if (!finalText) return
 
-  const parsed = hiveParseCoordination(finalText, $hiveMembers.get().map((m) => m.profile))
+  const entries = hiveExtractScratchEntries(finalText)
+  // Strip scratchpad blocks so they don't clutter the timeline or get re-relayed.
+  const scrubbed = finalText.replace(/\[scratchpad\]\s*[\s\S]*?(?=\[scratchpad\]|$)/g, '').trim()
+
+  const parsed = hiveParseCoordination(scrubbed, $hiveMembers.get().map((m) => m.profile))
   const from = hiveNormalize(member.profile)
   const swarm = $hiveSwarm.get()
+  for (const en of entries) hiveAppendScratch(from, en)
   const visible = [parsed.broadcast, ...parsed.relays.map((r) => r.text)].filter(Boolean).join(' ')
   if (visible) hiveAppendTimeline({ from, kind: 'agent', text: visible, to: null })
 
@@ -448,6 +493,27 @@ async function hiveCreateProfile(name, cloneFrom, soul) {
     await api({ path: `/api/profiles/${encodeURIComponent(trimmed)}/soul`, method: 'PUT', body: { content: soul.trim() } })
   }
   return res
+}
+
+/** Standard scratchpad pointer to drop into a profile's SOUL/persona. */
+const HIVE_SOUL_SCRATCH_HINT =
+  'SHARED TEAM SCRATCHPAD: the Hive room injects a shared markdown scratchpad into every message you receive. Use it to record progress, decisions, and shared facts. To append for the team, start a line with [scratchpad].'
+
+async function hiveGetSoul(profile) {
+  const api = window && window.hermesDesktop && window.hermesDesktop.api
+  if (!api) return { content: '', exists: false }
+  try {
+    const res = await api({ path: `/api/profiles/${encodeURIComponent(hiveNormalize(profile))}/soul` })
+    return res || { content: '', exists: false }
+  } catch {
+    return { content: '', exists: false }
+  }
+}
+
+async function hiveUpdateSoul(profile, content) {
+  const api = window && window.hermesDesktop && window.hermesDesktop.api
+  if (!api) throw new Error('Desktop bridge unavailable')
+  return await api({ path: `/api/profiles/${encodeURIComponent(hiveNormalize(profile))}/soul`, method: 'PUT', body: { content } })
 }
 
 /** Mint a live session on a profile and seed it with the room brief. */
@@ -559,6 +625,7 @@ function hivePersist() {
     title: $hiveTitle.get(),
     cwd: $hiveCwd.get(),
     swarm: $hiveSwarm.get(),
+    scratch: $hiveScratch.get(),
     members: $hiveMembers.get().map((m) => ({ profile: m.profile, storedId: m.storedId, browser: m.browser, muted: m.muted })),
     timeline: $hiveTimeline.get().slice(-120)
   })
@@ -575,6 +642,7 @@ async function hiveBootHydrate() {
   $hiveTitle.set(saved.title || 'hive')
   $hiveCwd.set(saved.cwd || '')
   $hiveSwarm.set(typeof saved.swarm === 'boolean' ? saved.swarm : true)
+  if (typeof saved.scratch === 'string') $hiveScratch.set(saved.scratch)
   if (Array.isArray(saved.timeline)) $hiveTimeline.set(saved.timeline.slice(-120))
   const hydrated = []
   for (const m of saved.members) {
@@ -626,6 +694,7 @@ function HiveRosterChip({ m }) {
         children: [
           sessionRef && jsx(DropdownMenuItem, { onSelect: () => host.navigate('/' + encodeURIComponent(sessionRef)), children: jsxs('span', { children: ['Open session', jsx('span', { className: 'ml-2 text-[10px] text-muted-foreground', children: sessionRef.slice(0, 12) + '…' })] }) }),
           m.status !== 'idle' && jsx(DropdownMenuItem, { onSelect: () => void hiveStopMember(m.profile), children: 'Stop (interrupt)' }),
+          jsx(DropdownMenuItem, { onSelect: () => { $hiveView.set('soul:' + m.profile); haptic('tap') }, children: 'Edit SOUL / persona' }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveToggleMute(m.profile), children: m.muted ? 'Unmute' : 'Mute' }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveSetBrowser(m.profile, !m.browser), children: m.browser ? 'Release browser control' : 'Grant browser control' }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveFreshContext(m.profile), children: 'Fresh context (new session)' }),
@@ -861,30 +930,114 @@ function HiveAddMember() {
   const [open, setOpen] = useState(false)
   const [loadState, setLoadState] = useState('idle')
   const [creating, setCreating] = useState(false)
+  const rootRef = useRef(null)
   const members = useValue($hiveMembers)
   const present = new Set(members.map((m) => hiveNormalize(m.profile)).concat(['you']))
-  const opts = profiles.filter((p) => !present.has(hiveNormalize(p.name))).filter((p) => p.name.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
-  const load = () => { setLoadState('loading'); void hiveFetchProfiles().then((p) => { setProfiles(p); setLoadState(p.length ? 'idle' : 'error'); setOpen(true) }) }
+  const opts = profiles.filter((p) => !present.has(hiveNormalize(p.name))).filter((p) => p.name.includes(q.toLowerCase())).slice(0, 8)
+
+  // Close on outside-click or Escape.
+  useEffect(() => {
+    if (!open) return
+    const onDocMouse = (ev) => { if (rootRef.current && !rootRef.current.contains(ev.target)) setOpen(false) }
+    const onKey = (ev) => { if (ev.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDocMouse)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDocMouse); document.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  const load = () => { setLoadState('loading'); void hiveFetchProfiles().then((p) => { setProfiles(p); setLoadState(p.length ? 'idle' : 'error') }) }
+  const toggle = () => { if (open) { setOpen(false); return } load(); setOpen(true) }
   const pick = (p) => { void hiveMintMember(p.name); setOpen(false); setQ('') }
-  return jsxs('div', { className: 'relative', children: [
-    open && jsxs('div', { className: 'absolute z-20 right-0 top-9 w-64 rounded-lg border bg-background p-2 shadow-lg', children: creating
-      ? jsx(HiveCreateForm, { onDone: (name) => { setCreating(false); setOpen(false); setQ(''); void hiveMintMember(name); void hiveFetchProfiles().then(setProfiles) }, onCancel: () => setCreating(false) })
-      : jsxs('div', { className: 'flex flex-col gap-1.5', children: [
-          jsx(Input, { autoFocus: true, placeholder: 'Search profiles…', value: q, onChange: (e) => setQ(e.target.value), className: 'mb-1 text-xs' }),
-          loadState === 'error'
-            ? jsx('div', { className: 'flex items-center justify-between p-1', children: [jsx('span', { className: 'text-[11px] text-muted-foreground', children: 'Couldn’t load profiles.' }), jsx(Button, { variant: 'ghost', size: 'sm', onClick: load, children: 'Retry' })] })
-            : jsx(HiveRenderOptions, { opts, onPick: pick, onNew: () => setCreating(true) })
-        ] }) }),
-    jsx(Button, { variant: 'ghost', size: 'sm', onClick: load, disabled: members.length >= HIVE_MAX_MEMBERS, children: jsxs('span', { children: [jsx(icons.Plus, { size: 13, className: 'mr-1 inline' }), 'Add'] }) })
+
+  return jsxs('div', { className: 'relative', ref: rootRef, children: [
+    open && jsxs('div', { className: 'absolute z-20 right-0 top-9 w-64 rounded-lg border bg-background p-2 shadow-lg', children: [
+      jsxs('div', { className: 'mb-1 flex items-center justify-between', children: [
+        jsx('div', { className: 'text-xs font-medium', children: creating ? 'New profile' : 'Add agent' }),
+        jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Close', onClick: () => { setOpen(false); setCreating(false) }, children: jsx(icons.X, { size: 13 }) })
+      ] }),
+      creating
+        ? jsx(HiveCreateForm, { onDone: (name) => { setCreating(false); setOpen(false); setQ(''); void hiveMintMember(name); void hiveFetchProfiles().then(setProfiles) }, onCancel: () => setCreating(false) })
+        : jsxs('div', { className: 'flex flex-col gap-1.5', children: [
+            jsx(Input, { autoFocus: true, placeholder: 'Search profiles…', value: q, onChange: (e) => setQ(e.target.value), className: 'mb-1 text-xs' }),
+            loadState === 'error'
+              ? jsx('div', { className: 'flex items-center justify-between p-1', children: [jsx('span', { className: 'text-[11px] text-muted-foreground', children: 'Couldn’t load profiles.' }), jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => { load(); setOpen(true) }, children: 'Retry' })] })
+              : jsx(HiveRenderOptions, { opts, onPick: pick, onNew: () => setCreating(true) })
+          ] })
+    ] }),
+    jsx(Button, { variant: 'ghost', size: 'sm', onClick: toggle, disabled: members.length >= HIVE_MAX_MEMBERS && !open, children: jsxs('span', { children: [jsx(icons.Plus, { size: 13, className: 'mr-1 inline' }), 'Add'] }) })
+  ] })
+}
+
+/** Shared team scratchpad — markdown, injected into every agent turn. */
+function HiveScratchEditor() {
+  const scratch = useValue($hiveScratch)
+  const [draft, setDraft] = useState(scratch)
+  const len = draft.length
+  return jsxs('div', { className: 'flex h-full min-h-0 flex-col gap-2 p-2', 'data-hive-scratch': true, children: [
+    jsxs('div', { className: 'flex items-center justify-between text-xs', children: [
+      jsx('span', { className: 'font-medium', children: 'Shared scratchpad' }),
+      jsx('span', { className: 'text-[10px] text-muted-foreground', children: `${len} chars · injected every turn · agents append with [scratchpad]` })
+    ] }),
+    jsx(Textarea, {
+      value: draft,
+      onChange: (e) => setDraft(e.target.value),
+      className: 'min-h-0 w-full grow resize-none rounded-md border bg-background p-2 font-mono text-xs',
+      placeholder: '# Team scratchpad\n\nRecord progress, decisions, and shared facts here.\nEvery member sees this every turn. Agents can append via [scratchpad].'
+    }),
+    jsxs('div', { className: 'flex items-center justify-between', children: [
+      jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => { setDraft(''); $hiveScratch.set(''); hivePersist() }, children: 'Clear' }),
+      jsx('div', { className: 'flex gap-1.5', children: [
+        jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => $hiveView.set('timeline'), children: 'Back' }),
+        jsx(Button, { size: 'sm', onClick: () => { $hiveScratch.set(draft); hivePersist(); host.notify({ kind: 'success', message: 'Scratchpad saved — agents get it next turn.' }) }, children: 'Save & sync' })
+      ] })
+    ] })
+  ] })
+}
+
+/** Inline SOUL/persona editor for a member profile (light + fast). */
+function HiveSoulEditor({ profile }) {
+  const [draft, setDraft] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState('')
+  const [hint, setHint] = useState(false)
+  useEffect(() => {
+    let on = true
+    void hiveGetSoul(profile).then((r) => { if (on) { setDraft(r.content || ''); setHint(String(r.content || '').includes('[scratchpad]')); setLoaded(true) } })
+      .catch(() => { if (on) { setError('Couldn’t load SOUL'); setLoaded(true) } })
+    return () => { on = false }
+  }, [profile])
+  const acc = hiveAccent(profile)
+  return jsxs('div', { className: 'flex h-full min-h-0 flex-col gap-2 p-2', 'data-hive-soul': true, children: [
+    jsxs('div', { className: 'flex items-center justify-between text-xs', children: [
+      jsx('span', { className: 'font-medium', children: jsx('span', { style: { color: acc.color }, children: '@' + profile + ' · SOUL' }) }),
+      jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => $hiveView.set('timeline'), children: 'Back' })
+    ] }),
+    hint &&
+      jsx('div', { className: 'rounded-md border border-primary/30 bg-primary/5 p-1.5 text-[10px] text-muted-foreground', children: '✓ Scratchpad pointer is in this SOUL.' }),
+    loaded
+      ? jsx(Textarea, {
+          value: draft,
+          onChange: (e) => setDraft(e.target.value),
+          className: 'min-h-0 w-full grow resize-none rounded-md border bg-background p-2 font-mono text-xs',
+          placeholder: '(blank SOUL — add a persona here, then remember it to drive the room)'
+        })
+      : jsx('div', { className: 'p-4 text-xs text-muted-foreground', children: 'Loading…' }),
+    error && jsx('div', { className: 'text-[11px] text-destructive', children: error }),
+    jsxs('div', { className: 'flex items-center justify-between gap-1.5', children: [
+      jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => { setDraft((d) => { const cur = d.trim() ? d + '\n\n' : ''; return cur + HIVE_SOUL_SCRATCH_HINT }); setHint(true) }, title: 'Adds a pointer to the shared scratchpad', children: 'Insert scratchpad pointer' }),
+      jsx(Button, { size: 'sm', onClick: async () => { try { await hiveUpdateSoul(profile, draft); host.notify({ kind: 'success', message: `@${profile} SOUL saved.` }); $hiveView.set('timeline') } catch (e) { setError((e && e.message) || 'Save failed') } }, children: 'Save SOUL' })
+    ] })
   ] })
 }
 
 function HivePane() {
   const members = useValue($hiveMembers)
   const title = useValue($hiveTitle)
+  const view = useValue($hiveView)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(title)
   const commitTitle = () => { if (titleDraft.trim()) { $hiveTitle.set(titleDraft.trim().slice(0, 40)); hivePersist() } setEditingTitle(false) }
+  const soulProfile = view.startsWith('soul:') ? view.slice(5) : null
   return jsxs('div', {
     'data-hive-pane': true,
     className: 'flex h-full flex-col bg-background',
@@ -899,6 +1052,7 @@ function HivePane() {
           jsx(Badge, { variant: 'outline', children: members.length + 1 + '/11' })
         ] }),
         jsxs('div', { className: 'flex items-center gap-1', children: [
+          jsx(Button, { variant: view === 'scratch' ? 'default' : 'ghost', size: 'sm', onClick: () => $hiveView.set(view === 'scratch' ? 'timeline' : 'scratch'), title: 'Shared team scratchpad', children: '📝' }),
           jsx(HiveAddMember, {}),
           jsx(HiveRoomMenu, {})
         ] })
@@ -907,12 +1061,15 @@ function HivePane() {
         jsx('div', { className: 'flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs select-none opacity-90', 'data-role': 'you', children: [
           jsx(StatusDot, { tone: 'good' }),
           jsx('span', { className: 'font-semibold', children: 'you' }),
-          jsx('span', { className: 'text-[10px] text-muted-foreground', children: '(you — always delivers)' })
+          jsx('span', { className: 'text-[10px] text-muted-foreground', children: '(always delivers)' })
         ] }),
         members.map((m) => jsx(HiveRosterChip, { key: m.profile, m }))
       ] }),
-      jsx(HiveTimeline, {}),
-      jsx(HiveComposer, {})
+      soulProfile
+        ? jsx(HiveSoulEditor, { key: soulProfile, profile: soulProfile })
+        : view === 'scratch'
+          ? jsx(HiveScratchEditor, {})
+          : jsxs('div', { className: 'flex min-h-0 grow flex-col', children: [jsx(HiveTimeline, {}), jsx(HiveComposer, {})] })
     ]
   })
 }

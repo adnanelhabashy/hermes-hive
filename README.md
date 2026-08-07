@@ -28,6 +28,12 @@ native concurrent per-profile sockets.
 - **Control deck** — stop a member mid-turn, mute a member, toggle
   agent-to-agent relays (swarm), fresh per-member context, reset the whole room,
   grant the browser role to exactly one member.
+- **Shared team scratchpad** 📝 — a markdown doc every member sees in context on
+  every turn. Record progress and shared facts; agents append via `[scratchpad]`.
+  It's the room's working memory.
+- **Inline SOUL editing** — edit any member's persona from its chip menu,
+  with a one-click "insert scratchpad pointer" so the shared doc is permanent
+  context.
 - **Create profiles inline** — "New profile…" in the Add menu, mirroring the
   app's own create dialog.
 
@@ -62,7 +68,9 @@ plugins**.
 - [x] Reset room · Stop member · Mute · Swarm toggle
 - [x] Dedicated sessions per member (+ Open session)
 - [x] Timeline persistence, timestamps, light markdown
-- [x] Inline profile creation
+- [x] Shared team scratchpad (injected + agent-appended)
+- [x] Inline SOUL editing + scratchpad pointer
+- [x] Add-agent popover close (✕ / outside-click / Escape)
 - [ ] Room presets (named crews)
 - [ ] Per-member token/cost meter
 - [ ] Advanced markdown + message actions (copy / resend)

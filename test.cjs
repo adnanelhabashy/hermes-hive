@@ -18,7 +18,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 
 // HIVE_DIGEST_LEN is defined above the markers; inject it for the sliced scope.
 const factory = new Function(
-  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName }`
+  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries }`
 )
 const {
   hiveParseCoordination,
@@ -27,7 +27,8 @@ const {
   hiveRouteUserPost,
   hiveExtractMentions,
   hiveNormalize,
-  hiveIsValidProfileName
+  hiveIsValidProfileName,
+  hiveExtractScratchEntries
 } = factory()
 
 let pass = 0
@@ -154,6 +155,14 @@ console.log('hiveNormalize + name validation')
   assert('reject empty', !hiveIsValidProfileName(''))
   assert('reject >64 chars', !hiveIsValidProfileName('a'.repeat(70)))
   assert('reject leading dash', !hiveIsValidProfileName('-builder'))
+}
+
+console.log('hiveExtractScratchEntries')
+{
+  deep('single scratch entry', hiveExtractScratchEntries('doing work\n[scratchpad]\nProgress: shipped v1\n\nmore notes'), ['Progress: shipped v1\n\nmore notes'])
+  deep('multiple entries', hiveExtractScratchEntries('[scratchpad] a [scratchpad] b'), ['a', 'b'])
+  deep('no entry', hiveExtractScratchEntries('just a normal reply'), [])
+  assert('relay stays out of scratch extraction', hiveExtractScratchEntries('[to @builder] check this').length === 0)
 }
 
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))
