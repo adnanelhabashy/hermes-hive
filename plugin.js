@@ -1116,8 +1116,9 @@ function HivePane() {
   const [titleDraft, setTitleDraft] = useState(title)
   const commitTitle = () => { if (titleDraft.trim()) { $hiveTitle.set(titleDraft.trim().slice(0, 40)); hivePersist() } setEditingTitle(false) }
   const soulProfile = view.startsWith('soul:') ? view.slice(5) : null
-  // Collapse to a slim rail: hide the full pane, show the rail (32px) so the
-  // desktop reclaims ~348px but a visible chevron remains to re-expand.
+  // Collapse to a slim rail: hide the full 380px pane, show the 32px rail
+  // (ChevronLeft) so the desktop reclaims ~348px but a visible chevron stays
+  // to re-expand — the user can always get back without ⌘K.
   const collapsePane = () => {
     if (hiveSetCollapsed) hiveSetCollapsed(true)
     $hiveCollapsed.set(true)
@@ -1198,6 +1199,8 @@ export default {
         render: () => jsx(HiveRail, {})
       })
     }
+    // Collapse swaps pane ↔ rail: the full pane closes, the slim rail stays
+    // as the visible (ChevronLeft) expand affordance.
     const setCollapsed = (c) => { registerPane(!c); registerRail(c) }
     setCollapsed($hiveCollapsed.get())
     hiveSetCollapsed = setCollapsed
