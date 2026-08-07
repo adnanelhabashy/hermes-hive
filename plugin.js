@@ -85,6 +85,8 @@ const $hiveMentionOpen = atom('') // autocomplete filter when composing @name
 const $hiveSwarm = atom(true) // agent-to-agent relays on/off
 const $hiveScratch = atom('') // shared team scratchpad (markdown), injected every turn
 const $hiveView = atom('timeline') // 'timeline' | 'scratch' | 'soul:<profile>'
+const $hiveCollapsed = atom(false) // pane collapsed to a slim bar
+const HIVE_PLUGIN_VERSION = 'v1.2'
 // Live per-member stream buffers for in-flight feedback.
 const $hiveStreams = atom({}) // { [profile]: { text, tool } }
 // Completion dedup: session -> last-processed timestamp.
@@ -638,6 +640,7 @@ async function hiveResetRoom() {
   $hiveStreams.set({})
   $hiveSwarm.set(true)
   $hiveView.set('timeline')
+  $hiveCollapsed.set(false)
   hivePersist()
   console.log('[buzz-hive] reset room: cleared, minting fresh @default')
   await hiveMintMember('default')
@@ -656,6 +659,7 @@ function hivePersist() {
     cwd: $hiveCwd.get(),
     swarm: $hiveSwarm.get(),
     scratch: $hiveScratch.get(),
+    collapsed: $hiveCollapsed.get(),
     members: $hiveMembers.get().map((m) => ({ profile: m.profile, storedId: m.storedId, browser: m.browser, muted: m.muted })),
     timeline: $hiveTimeline.get().slice(-120)
   })
@@ -673,6 +677,7 @@ async function hiveBootHydrate() {
   $hiveCwd.set(saved.cwd || '')
   $hiveSwarm.set(typeof saved.swarm === 'boolean' ? saved.swarm : true)
   if (typeof saved.scratch === 'string') $hiveScratch.set(saved.scratch)
+  if (typeof saved.collapsed === 'boolean') $hiveCollapsed.set(saved.collapsed)
   if (Array.isArray(saved.timeline)) $hiveTimeline.set(saved.timeline.slice(-120))
   const hydrated = []
   for (const m of saved.members) {
@@ -1080,10 +1085,27 @@ function HivePane() {
   const members = useValue($hiveMembers)
   const title = useValue($hiveTitle)
   const view = useValue($hiveView)
+  const collapsed = useValue($hiveCollapsed)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(title)
   const commitTitle = () => { if (titleDraft.trim()) { $hiveTitle.set(titleDraft.trim().slice(0, 40)); hivePersist() } setEditingTitle(false) }
   const soulProfile = view.startsWith('soul:') ? view.slice(5) : null
+  const toggleCollapse = () => { $hiveCollapsed.set(!$hiveCollapsed.get()); hivePersist() }
+  if (collapsed) {
+    return jsxs('div', {
+      'data-hive-pane': true,
+      className: 'flex h-full flex-col bg-background',
+      style: { minHeight: 0 },
+      children: [
+        jsxs('div', { className: 'flex items-center gap-2 border-b px-2 py-1.5', children: [
+          jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Expand hive', title: 'Expand hive', onClick: toggleCollapse, children: jsx(icons.ChevronLeft, { size: 14 }) }),
+          jsx('span', { className: 'text-sm font-semibold', children: 'Hive' }),
+          jsx(Badge, { variant: 'outline', title: `${members.length + 1} members`, children: members.length + 1 }),
+          jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: title })
+        ] })
+      ]
+    })
+  }
   return jsxs('div', {
     'data-hive-pane': true,
     className: 'flex h-full flex-col bg-background',
@@ -1091,6 +1113,7 @@ function HivePane() {
     children: [
       jsxs('div', { className: 'flex items-center justify-between gap-2 border-b px-3 py-2', children: [
         jsxs('div', { className: 'flex min-w-0 items-center gap-2', children: [
+          jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Collapse hive', title: 'Collapse hive to a bar', onClick: toggleCollapse, children: jsx(icons.ChevronRight, { size: 14 }) }),
           jsx('span', { className: 'text-sm font-semibold', children: 'Hive' }),
           editingTitle
             ? jsx(Input, { autoFocus: true, value: titleDraft, className: 'h-6 w-24 text-xs', onChange: (e) => setTitleDraft(e.target.value), onBlur: commitTitle, onKeyDown: (ev) => { if (ev.key === 'Enter') commitTitle() } })
