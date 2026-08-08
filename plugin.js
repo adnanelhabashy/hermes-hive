@@ -44,6 +44,7 @@ import {
   Badge,
   StatusDot,
   Switch,
+  SegmentedControl,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -94,6 +95,12 @@ const $hiveMentionOpen = atom('') // autocomplete filter when composing @name
 const $hiveSwarm = atom(true) // agent-to-agent relays on/off
 const $hiveScratch = atom('') // shared team scratchpad (markdown), injected every turn
 const $hiveView = atom('timeline') // 'timeline' | 'scratch' | 'soul:<profile>'
+// Timeline presentation: 'flat' (chronological feed) | 'agents' (grouped,
+// per-agent collapsible sections). Expand/collapse is per-agent, persisted.
+const $hiveTimelineMode = atom('agents')
+const $hiveAgentExpanded = atom({}) // { [profile]: true|false } — default collapsed
+// Streaming preview: which agent is currently answering (for the grouped header).
+const $hiveGroupLive = atom({}) // { [profile]: { text, tool } }
 // Collapse/expand is the pane-shell's NATIVE zone minimize (the standard
 // slim vertical rail with a clickable tab), not a plugin-managed rail. The
 // pane is always registered. This handle lets internal callers (reset,
@@ -304,6 +311,35 @@ function hiveModelAssignmentBody(entry, profile) {
   if (entry.base_url) body.base_url = entry.base_url
   if (profile) body.profile = profile
   return body
+}
+
+/** Group a flat timeline into per-agent sections, preserving intra-agent order.
+ *  Returns [{ profile, messages: [...] }] in first-appearance order. System
+ *  messages (from==='system') stay at the top in their own 'system' group.
+ *  Pure — used by the grouped/expandable timeline view. */
+function hiveGroupTimeline(timeline) {
+  const groups = []
+  const idx = {}
+  for (const m of (timeline || [])) {
+    const who = (typeof m.from === 'string' ? m.from : (m.from && m.from.profile)) || 'system'
+    const key = who === 'system' ? 'system' : hiveNormalize(who)
+    if (!(key in idx)) {
+      idx[key] = groups.length
+      groups.push({ profile: key, messages: [] })
+    }
+    groups[idx[key]].messages.push(m)
+  }
+  // system group first, then others in appearance order
+  return groups
+}
+
+/** Collapse/expand a single agent section. Returns the next expanded map. */
+function hiveToggleAgentExpanded(map, profile, force) {
+  const key = hiveNormalize(String(profile || ''))
+  const cur = !!(map && map[key])
+  const next = { ...(map || {}) }
+  next[key] = typeof force === 'boolean' ? force : !cur
+  return next
 }
 
 // --CORE-END--
@@ -552,6 +588,13 @@ function hiveStreamClear(profile) {
   const next = { ...s }
   delete next[key]
   $hiveStreams.set(next)
+  // Clear the live-group preview too so the collapsed header stops showing "…".
+  const g = $hiveGroupLive.get()
+  if (key in g) {
+    const ng = { ...g }
+    delete ng[key]
+    $hiveGroupLive.set(ng)
+  }
 }
 
 // ── profiles + sessions ─────────────────────────────────────────────────────
@@ -744,6 +787,8 @@ function hivePersist() {
     cwd: $hiveCwd.get(),
     swarm: $hiveSwarm.get(),
     scratch: $hiveScratch.get(),
+    timelineMode: $hiveTimelineMode.get(),
+    agentExpanded: $hiveAgentExpanded.get(),
     members: $hiveMembers.get().map((m) => ({ profile: m.profile, storedId: m.storedId, browser: m.browser, muted: m.muted })),
     timeline: $hiveTimeline.get().slice(-120)
   })
@@ -760,6 +805,8 @@ async function hiveBootHydrate() {
   $hiveTitle.set(saved.title || 'hive')
   $hiveCwd.set(saved.cwd || '')
   $hiveSwarm.set(typeof saved.swarm === 'boolean' ? saved.swarm : true)
+  if (typeof saved.timelineMode === 'string') $hiveTimelineMode.set(saved.timelineMode)
+  if (saved.agentExpanded && typeof saved.agentExpanded === 'object') $hiveAgentExpanded.set(saved.agentExpanded)
   if (typeof saved.scratch === 'string') $hiveScratch.set(saved.scratch)
   if (Array.isArray(saved.timeline)) $hiveTimeline.set(saved.timeline.slice(-120))
   const hydrated = []
@@ -914,6 +961,73 @@ function HiveLiveRow() {
   })
 }
 
+/** Per-agent collapsible section in the grouped timeline. Header shows the
+ *  agent color+name, message count, a live-stream preview, and a chevron that
+ *  expands/collapses that agent's work. Low-profile when collapsed. */
+function HiveAgentGroup({ group, expanded, onToggle }) {
+  const { profile, messages } = group
+  const isSystem = profile === 'system'
+  const { color, soft } = isSystem ? { color: 'rgba(128,128,128,0.6)', soft: 'rgba(128,128,128,0.07)' } : hiveAccent(profile)
+  const live = $hiveGroupLive.get()[profile]
+  const last = messages[messages.length - 1]
+  const preview = live && live.text ? live.text.trim().replace(/\s+/g, ' ').slice(0, 90)
+    : last ? String(last.text || '').trim().replace(/\s+/g, ' ').slice(0, 90) : ''
+  const count = messages.length
+  const busy = !!(live && (live.text || live.tool))
+  return jsxs('div', {
+    className: 'rounded-lg border', style: { borderColor: color, background: isSystem ? 'transparent' : soft },
+    'data-hive-group': profile, 'data-expanded': expanded ? 'true' : 'false',
+    children: [
+      jsx('button', {
+        type: 'button', onClick: onToggle,
+        'aria-expanded': expanded ? 'true' : 'false',
+        title: expanded ? `Collapse @${profile}` : `Expand @${profile}'s work`,
+        className: 'flex w-full items-center gap-1.5 px-2 py-1.5 text-left select-none',
+        children: jsxs('span', { className: 'flex min-w-0 flex-1 items-center gap-1.5', children: [
+          jsx('span', { className: 'shrink-0', style: HIVE_T.sm, children: expanded ? '▾' : '▸' }),
+          jsx('span', { className: 'rounded-full shrink-0', style: { ...HIVE_T.dot, background: color } }),
+          jsx('span', { style: { color }, className: 'shrink-0 font-semibold', children: isSystem ? 'hive' : '@' + profile }),
+          busy && jsx('span', { className: 'shrink-0 animate-pulse text-muted-foreground', style: HIVE_T.xs, children: '…' }),
+          jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: expanded ? `${count} msg` : (preview || (busy ? 'working…' : `${count} msg`)) })
+        ] })
+      }),
+      expanded && jsx('div', { className: 'flex flex-col gap-0.5 px-1 pb-1', children:
+        messages.map((m) => jsx(HiveMemberTone, { key: m.id, from: m.from, to: m.to, text: m.text, ts: m.ts }))
+      })
+    ]
+  })
+}
+
+/** Grouped timeline: each agent's work is its own expandable section. */
+function HiveGroupedTimeline() {
+  const timeline = useValue($hiveTimeline)
+  const expanded = useValue($hiveAgentExpanded)
+  const ref = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [timeline.length])
+  const groups = useMemo(() => hiveGroupTimeline(timeline), [timeline])
+  const toggle = (profile) => {
+    $hiveAgentExpanded.set(hiveToggleAgentExpanded($hiveAgentExpanded.get(), profile))
+    hivePersist()
+  }
+  return jsx(ScrollArea, {
+    ref, className: 'h-full grow min-h-0',
+    children: jsx('div', { className: 'flex flex-col gap-1 p-2', 'data-hive-grouped': true, children: [
+      ...(groups.length
+        ? groups.map((g) => jsx(HiveAgentGroup, {
+            key: g.profile, group: g,
+            expanded: !!expanded[g.profile],
+            onToggle: () => toggle(g.profile)
+          }))
+        : [jsx('div', { key: 'empty', className: 'p-6 text-center text-xs text-muted-foreground', children: 'No activity yet. Message @default or add agents to start the crew.' })]),
+      jsx(HiveLiveRow, { key: 'live' })
+    ] })
+  })
+}
+
+/** Flat chronological feed (the original view). */
 function HiveTimeline() {
   const timeline = useValue($hiveTimeline)
   const ref = useRef(null)
@@ -935,6 +1049,32 @@ function HiveTimeline() {
       ]
     })
   })
+}
+
+/** Slim toggle between the flat feed and grouped-by-agent expandable view. */
+function HiveTimelineModeToggle() {
+  const mode = useValue($hiveTimelineMode)
+  return jsx('div', {
+    className: 'flex items-center justify-between gap-2 border-b px-2 py-1',
+    'data-hive-mode-toggle': true,
+    children: [
+      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Work' }),
+      jsx(SegmentedControl, {
+        options: [
+          { id: 'agents', label: 'By agent' },
+          { id: 'flat', label: 'Feed' }
+        ],
+        value: mode,
+        onChange: (v) => { $hiveTimelineMode.set(v === 'agents' ? 'agents' : 'flat'); hivePersist() }
+      })
+    ]
+  })
+}
+
+/** Renders the active timeline presentation (grouped or flat). */
+function TimelineBody() {
+  const mode = useValue($hiveTimelineMode)
+  return mode === 'agents' ? jsx(HiveGroupedTimeline, {}) : jsx(HiveTimeline, {})
 }
 
 function HiveComposer() {
@@ -1244,7 +1384,11 @@ function HivePane() {
         ? jsx(HiveSoulEditor, { key: soulProfile, profile: soulProfile })
         : view === 'scratch'
           ? jsx(HiveScratchEditor, {})
-          : jsxs('div', { className: 'flex min-h-0 grow flex-col', children: [jsx(HiveTimeline, {}), jsx(HiveComposer, {})] })
+          : jsxs('div', { className: 'flex min-h-0 grow flex-col', children: [
+              jsx(HiveTimelineModeToggle, {}),
+              jsx(TimelineBody, {}),
+              jsx(HiveComposer, {})
+            ] })
     ]
   })
 }
@@ -1301,6 +1445,9 @@ export default {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
       hiveStreamAppend(m.profile, (e.payload && e.payload.text) || '')
+      const key = hiveNormalize(m.profile)
+      const s = $hiveStreams.get()[key] || { text: '', tool: '' }
+      $hiveGroupLive.set({ ...$hiveGroupLive.get(), [key]: { text: s.text, tool: s.tool } })
       hiveMarkStatus(e.session_id, 'streaming')
     }))
     disposers.push(host.onEvent('thinking.delta', (e) => hiveMarkStatus(e.session_id, 'streaming')))

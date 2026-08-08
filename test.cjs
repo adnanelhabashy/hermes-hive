@@ -18,7 +18,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 
 // HIVE_DIGEST_LEN is defined above the markers; inject it for the sliced scope.
 const factory = new Function(
-  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody }`
+  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveGroupTimeline, hiveToggleAgentExpanded }`
 )
 const {
   hiveParseCoordination,
@@ -33,7 +33,9 @@ const {
   HIVE_WORKING_MODELS,
   hiveModelKey,
   hiveResolveModelEntry,
-  hiveModelAssignmentBody
+  hiveModelAssignmentBody,
+  hiveGroupTimeline,
+  hiveToggleAgentExpanded
 } = factory()
 
 let pass = 0
@@ -206,6 +208,33 @@ console.log('hiveModelKey + hiveResolveModelEntry + hiveModelAssignmentBody')
     profile: 'frontend'
   })
   assert('null entry → null body', hiveModelAssignmentBody(null, 'x') === null)
+}
+
+console.log('hiveGroupTimeline (grouped/expandable view)')
+{
+  const tl = [
+    { id: 'a', from: 'you', text: 'draft the email' },
+    { id: 'b', from: 'frontier', text: 'done' },
+    { id: 'c', from: 'builder', text: 'checked', to: 'frontier' },
+    { id: 'd', from: 'frontier', text: 'follow-up' },
+    { id: 'e', from: 'system', text: 'reset', kind: 'system' }
+  ]
+  const g = hiveGroupTimeline(tl)
+  deep('groups by agent preserving order', g.map((x) => x.profile), ['you', 'frontier', 'builder', 'system'])
+  deep('intra-agent order preserved', g[1].messages.map((m) => m.id), ['b', 'd'])
+  deep('system group is last, contains system msgs', g[3].messages.map((m) => m.id), ['e'])
+  deep('empty timeline → no groups', hiveGroupTimeline([]), [])
+  const g2 = hiveGroupTimeline([{ id: 'x', from: 'FRONTIER', text: 'hi' }])
+  deep('profile normalized to lowercase', g2[0].profile, 'frontier')
+}
+
+console.log('hiveToggleAgentExpanded')
+{
+  deep('empty map expands a profile', hiveToggleAgentExpanded({}, 'frontier'), { frontier: true })
+  deep('toggle off when already expanded', hiveToggleAgentExpanded({ frontier: true }, 'frontier'), { frontier: false })
+  deep('force true', hiveToggleAgentExpanded({}, 'frontier', true), { frontier: true })
+  deep('force false', hiveToggleAgentExpanded({ frontier: true }, 'frontier', false), { frontier: false })
+  deep('normalizes profile key', hiveToggleAgentExpanded({}, 'Frontier'), { frontier: true })
 }
 
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))
