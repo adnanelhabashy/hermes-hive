@@ -282,7 +282,7 @@ function hiveInline(text) {
     if (m.index > last) nodes.push(text.slice(last, m.index))
     const tok = m[0]
     if (tok.startsWith('**')) nodes.push(jsx('strong', { key: nodes.length, children: tok.slice(2, -2) }))
-    else nodes.push(jsx('code', { key: nodes.length, className: 'rounded bg-muted px-1 py-px text-[0.9em]', children: tok.slice(1, -1) }))
+    else nodes.push(jsx('code', { key: nodes.length, className: 'rounded bg-muted px-1 py-px', style: { fontSize: '0.9em' }, children: tok.slice(1, -1) }))
     last = m.index + tok.length
   }
   if (last < text.length) nodes.push(text.slice(last))
@@ -306,7 +306,8 @@ function hiveRenderText(text) {
       out.push(
         jsx('pre', {
           key: out.length,
-          className: 'mt-1 mb-1 overflow-x-auto rounded-md bg-muted p-2 text-[0.85em] leading-snug',
+          className: 'mt-1 mb-1 overflow-x-auto rounded-md bg-muted p-2 leading-snug',
+          style: { fontSize: '0.85em' },
           children: blocks[i].replace(/\n$/, '')
         })
       )
@@ -413,7 +414,7 @@ async function hiveHandleAssistantDone(e, content) {
   _hiveProcessed.set(e.session_id, now)
 
   hiveStreamClear(member.profile)
-  hiveMarkStatus(e.session_id, e.profile, 'done')
+  hiveMarkStatus(e.session_id, 'done')
 
   if (_hiveSeeded.get(hiveNormalize(member.profile))) {
     _hiveSeeded.delete(hiveNormalize(member.profile))
@@ -625,7 +626,7 @@ async function hiveStopMember(profile) {
   if (!m || !m.sessionId) return
   try {
     await host.request('session.interrupt', { session_id: m.sessionId })
-    hiveMarkStatus(m.sessionId, m.profile, 'idle')
+    hiveMarkStatus(m.sessionId, 'idle')
     hiveStreamClear(m.profile)
     hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${m.profile} stopped`, to: null })
   } catch (err) {
@@ -844,7 +845,7 @@ function HiveComposer() {
         const target = members.find((m) => hiveNormalize(m.profile) === r.target)
         if (target) {
           hiveAppendTimeline({ from: 'you', kind: 'relay', text: r.text, to: r.target })
-          hiveMarkStatus(target.sessionId, target.profile, 'streaming')
+          hiveMarkStatus(target.sessionId, 'streaming')
           hiveStreamReset(target.profile)
           void hiveDeliverTo(target, r.text, { from: 'you' })
         }
@@ -852,7 +853,7 @@ function HiveComposer() {
     } else {
       const targets = members.filter((m) => !(m.muted && parsed.broadcast))
       hiveAppendTimeline({ from: 'you', kind: 'user', text: parsed.broadcast, to: null })
-      for (const m of targets) { hiveMarkStatus(m.sessionId, m.profile, 'streaming'); hiveStreamReset(m.profile) }
+      for (const m of targets) { hiveMarkStatus(m.sessionId, 'streaming'); hiveStreamReset(m.profile) }
       void hiveDeliverToAll(parsed.broadcast, { from: 'you' })
     }
     hivePersist()
@@ -967,7 +968,7 @@ function HiveCreateForm({ onDone, onCancel }) {
 }
 
 function HiveRenderOptions({ opts, onPick, onNew }) {
-  return jsxs('div', { className: 'flex flex-col gap-0.5 max-h-48 overflow-auto', children: [
+  return jsxs('div', { className: 'flex flex-col gap-0.5', style: { maxHeight: 220, overflowY: 'auto' }, children: [
     opts.length ? opts.map((p) => {
       const { color } = hiveAccent(p.name)
       return jsx(Button, { key: p.name, variant: 'ghost', size: 'sm', className: 'justify-start text-xs', onClick: () => onPick(p), children: jsxs('div', { className: 'flex items-center gap-1.5', children: [
@@ -990,7 +991,7 @@ function HiveAddMember() {
   const rootRef = useRef(null)
   const members = useValue($hiveMembers)
   const present = new Set(members.map((m) => hiveNormalize(m.profile)).concat(['you']))
-  const opts = profiles.filter((p) => !present.has(hiveNormalize(p.name))).filter((p) => p.name.includes(q.toLowerCase())).slice(0, 8)
+  const opts = profiles.filter((p) => !present.has(hiveNormalize(p.name))).filter((p) => p.name.includes(q.toLowerCase())).slice(0, 20)
 
   // Close on outside-click or Escape.
   useEffect(() => {
@@ -1180,20 +1181,20 @@ export default {
       if (!m) return
       console.log(`[buzz-hive] turn start @${m.profile} session=${e.session_id}`)
       hiveStreamReset(m.profile)
-      hiveMarkStatus(e.session_id, e.profile, 'streaming')
+      hiveMarkStatus(e.session_id, 'streaming')
     }))
     disposers.push(host.onEvent('message.delta', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
       hiveStreamAppend(m.profile, (e.payload && e.payload.text) || '')
-      hiveMarkStatus(e.session_id, e.profile, 'streaming')
+      hiveMarkStatus(e.session_id, 'streaming')
     }))
-    disposers.push(host.onEvent('thinking.delta', (e) => hiveMarkStatus(e.session_id, e.profile, 'streaming')))
-    disposers.push(host.onEvent('reasoning.delta', (e) => hiveMarkStatus(e.session_id, e.profile, 'streaming')))
+    disposers.push(host.onEvent('thinking.delta', (e) => hiveMarkStatus(e.session_id, 'streaming')))
+    disposers.push(host.onEvent('reasoning.delta', (e) => hiveMarkStatus(e.session_id, 'streaming')))
     disposers.push(host.onEvent('tool.start', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
-      hiveMarkStatus(e.session_id, e.profile, 'streaming')
+      hiveMarkStatus(e.session_id, 'streaming')
       hiveStreamSetTool(m.profile, (e.payload && (e.payload.tool || e.payload.name)) || '')
     }))
     disposers.push(host.onEvent('message.complete', (e) => {
