@@ -18,7 +18,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 
 // HIVE_DIGEST_LEN is defined above the markers; inject it for the sliced scope.
 const factory = new Function(
-  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession }`
+  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody }`
 )
 const {
   hiveParseCoordination,
@@ -29,7 +29,11 @@ const {
   hiveNormalize,
   hiveIsValidProfileName,
   hiveExtractScratchEntries,
-  hiveIsMemberSession
+  hiveIsMemberSession,
+  HIVE_WORKING_MODELS,
+  hiveModelKey,
+  hiveResolveModelEntry,
+  hiveModelAssignmentBody
 } = factory()
 
 let pass = 0
@@ -174,6 +178,34 @@ console.log('hiveIsMemberSession (strict session isolation)')
   assert('different profile, different session → no match', hiveIsMemberSession({ ...member, profile: 'other' }, 'x') === false)
   assert('null session id → no match', hiveIsMemberSession(member, null) === false)
   assert('null member → no match', hiveIsMemberSession(null, 'hive-session-1') === false)
+}
+
+console.log('HIVE_WORKING_MODELS (curated manifest)')
+{
+  assert('manifest is a non-empty array', Array.isArray(HIVE_WORKING_MODELS) && HIVE_WORKING_MODELS.length >= 5)
+  assert('every entry has provider + model + label', HIVE_WORKING_MODELS.every((e) => e.provider && e.model && e.label))
+  const keys = new Set(HIVE_WORKING_MODELS.map((e) => hiveModelKey(e)))
+  assert('no duplicate provider::model keys', keys.size === HIVE_WORKING_MODELS.length)
+  assert('qwen-token-plan primary present', HIVE_WORKING_MODELS.some((e) => e.provider === 'custom:qwen-token-plan'))
+  assert('no dead deepseek-v4-flash (bare) in manifest', !HIVE_WORKING_MODELS.some((e) => e.model === 'deepseek-v4-flash'))
+}
+
+console.log('hiveModelKey + hiveResolveModelEntry + hiveModelAssignmentBody')
+{
+  deep('key normalizes provider', hiveModelKey({ provider: 'Cline-Pass', model: 'cline-pass/qwen3.7-max' }), 'cline-pass::cline-pass/qwen3.7-max')
+  deep('key empty on null', hiveModelKey(null), '')
+  const match = hiveResolveModelEntry('custom:qwen-token-plan', 'qwen3.8-max-preview')
+  assert('resolves known entry', !!match && match.label.includes('Qwen 3.8'))
+  assert('unknown combo → undefined', hiveResolveModelEntry('nope', 'nope-model') === undefined)
+  const body = hiveModelAssignmentBody(HIVE_WORKING_MODELS[0], 'frontend')
+  deep('assignment body has scope main + profile + base_url', body, {
+    provider: 'custom:qwen-token-plan',
+    model: 'qwen3.8-max-preview',
+    scope: 'main',
+    base_url: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic',
+    profile: 'frontend'
+  })
+  assert('null entry → null body', hiveModelAssignmentBody(null, 'x') === null)
 }
 
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))

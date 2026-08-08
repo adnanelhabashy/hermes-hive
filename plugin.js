@@ -49,6 +49,11 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   icons,
   cn,
   profileColor,
@@ -252,6 +257,53 @@ function hiveExtractScratchEntries(content) {
  *  profile fallback leaks main-chat events into the room (regression-tested). */
 function hiveIsMemberSession(m, sessionId) {
   return !!(sessionId && m && m.sessionId === sessionId)
+}
+
+// ── curated working-model manifest ─────────────────────────────────────────
+// ONLY providers/models verified live end-to-end (2026-08). The hive model
+// selector shows exactly these — nothing that isn't confirmed good. Add a new
+// entry ONLY after a real `hermes chat` round-trip proves it works.
+// Entries: { provider, model, base_url?, label }. `base_url` only for custom
+// providers (custom:qwen-token-plan). Pure/data — safe to slice for tests.
+const HIVE_WORKING_MODELS = Object.freeze([
+  { provider: 'custom:qwen-token-plan', model: 'qwen3.8-max-preview', base_url: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', label: 'Qwen 3.8 Max (token plan)' },
+  { provider: 'cline-pass', model: 'cline-pass/qwen3.7-max', label: 'Qwen 3.7 Max (cline)' },
+  { provider: 'command-code', model: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+  { provider: 'command-code', model: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+  { provider: 'command-code', model: 'moonshotai/Kimi-K3', label: 'Kimi K3' },
+  { provider: 'command-code', model: 'Qwen/Qwen3.7-Max', label: 'Qwen 3.7 Max (cmd)' },
+  { provider: 'command-code', model: 'zai-org/GLM-5.2', label: 'GLM-5.2' },
+  { provider: 'command-code', model: 'MiniMaxAI/MiniMax-M3', label: 'MiniMax M3' },
+  { provider: 'nous', model: 'z-ai/glm-5.2', label: 'GLM-5.2 (Nous)' },
+  { provider: 'openrouter', model: 'poolside/laguna-s-2.1:free', label: 'Laguna (free)' }
+])
+
+/** Find a manifest entry by its {provider,model} composite key. Returns the
+ *  frozen entry or undefined. Key = provider + '::' + model (normalized). */
+function hiveModelKey(entry) {
+  if (!entry) return ''
+  return hiveNormalize(String(entry.provider || '')) + '::' + String(entry.model || '')
+}
+
+/** Resolve which manifest entry a member is currently on, by matching the
+ *  member's stored provider/model (or a lsat-set override). Best-effort. */
+function hiveResolveModelEntry(provider, model) {
+  if (!provider && !model) return undefined
+  const key = hiveNormalize(String(provider || '')) + '::' + (model || '')
+  return (HIVE_WORKING_MODELS || []).find((e) => hiveModelKey(e) === key)
+}
+
+/** Build the /api/model/set payload for a manifest entry + profile. Pure. */
+function hiveModelAssignmentBody(entry, profile) {
+  if (!entry) return null
+  const body = {
+    provider: entry.provider,
+    model: entry.model,
+    scope: 'main'
+  }
+  if (entry.base_url) body.base_url = entry.base_url
+  if (profile) body.profile = profile
+  return body
 }
 
 // --CORE-END--
@@ -598,6 +650,30 @@ async function hiveFreshContext(profile) {
   await hiveMintMember(key)
 }
 
+/** Set a member's model to a curated WORKING model entry, then mint a fresh
+ *  session on that profile so it picks up the new model. Uses the official
+ *  desktop `/api/model/set` endpoint (profile-scoped) — the same path the
+ *  built-in model picker uses. Returns the API result or throws. */
+async function hiveSetMemberModel(profile, entry) {
+  const api = window && window.hermesDesktop && window.hermesDesktop.api
+  if (!api) throw new Error('Desktop bridge unavailable')
+  if (!entry) throw new Error('No model entry')
+  const body = hiveModelAssignmentBody(entry, hiveNormalize(profile))
+  const res = await api({ path: '/api/model/set', method: 'POST', body })
+  // Persist the choice on the member for next-boot hydrate + UI checkmark.
+  const list = $hiveMembers.get()
+  const key = hiveNormalize(profile)
+  $hiveMembers.set(list.map((m) =>
+    hiveNormalize(m.profile) === key
+      ? { ...m, model: entry.model, provider: entry.provider, modelLabel: entry.label }
+      : m
+  ))
+  hivePersist()
+  // Fresh session so the new model is actually in effect.
+  await hiveFreshContext(key)
+  return res
+}
+
 async function hiveSetBrowser(profile, on) {
   const list = $hiveMembers.get()
   const key = hiveNormalize(profile)
@@ -688,7 +764,7 @@ async function hiveBootHydrate() {
   if (Array.isArray(saved.timeline)) $hiveTimeline.set(saved.timeline.slice(-120))
   const hydrated = []
   for (const m of saved.members) {
-    const live = { profile: m.profile, storedId: m.storedId || null, browser: !!m.browser, muted: !!m.muted, status: 'idle', sessionId: null }
+    const live = { profile: m.profile, storedId: m.storedId || null, browser: !!m.browser, muted: !!m.muted, status: 'idle', sessionId: null, model: m.model || null, provider: m.provider || null, modelLabel: m.modelLabel || null }
     if (live.storedId) {
       try {
         const info = await host.request('session.info', { session_id: live.storedId })
@@ -703,6 +779,42 @@ async function hiveBootHydrate() {
 }
 
 // ── UI ──────────────────────────────────────────────────────────────────────
+
+/** Low-profile per-member model selector. Lists ONLY the curated WORKING
+ *  models (HIVE_WORKING_MODELS). Checkmark on the member's current model.
+ *  Picking one sets it profile-wide via /api/model/set + fresh-contexts. */
+function HiveModelSubmenu({ m }) {
+  const currentKey = m && m.model && m.provider ? 'm-' + hiveModelKey({ provider: m.provider, model: m.model }) : ''
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const pick = (key) => {
+    const entry = HIVE_WORKING_MODELS.find((e) => 'm-' + hiveModelKey(e) === key)
+    if (!entry) return
+    setBusy(true); setErr('')
+    void hiveSetMemberModel(m.profile, entry)
+      .then(() => { setBusy(false); host.notify({ kind: 'success', message: `@${m.profile} → ${entry.label}. Model set + fresh session.` }) })
+      .catch((e) => { setBusy(false); setErr((e && e.message) || 'Set failed.') })
+  }
+  return jsx('div', { className: 'px-1 py-1', 'data-hive-model': true, children: jsxs('div', { className: 'flex flex-col gap-1', children: [
+    jsxs('div', { className: 'flex items-center gap-2 px-2', children: [
+      jsx('span', { className: 'shrink-0 text-muted-foreground', style: HIVE_T.xs, children: 'Model' }),
+      jsx(Select, {
+        value: currentKey, disabled: busy,
+        onValueChange: (v) => pick(v),
+        children: [
+          jsx(SelectTrigger, { className: 'h-6 w-full text-xs', children: jsx(SelectValue, { placeholder: m.modelLabel || 'Pick model' }) }),
+          jsx(SelectContent, {
+            children: HIVE_WORKING_MODELS.map((e) =>
+              jsx(SelectItem, { key: 'm-' + hiveModelKey(e), value: 'm-' + hiveModelKey(e), children: e.label })
+            )
+          })
+        ]
+      })
+    ] }),
+    err && jsx('div', { className: 'px-2 text-destructive', style: HIVE_T.xs, children: err }),
+    jsx('div', { className: 'px-2 text-muted-foreground', style: HIVE_T.xs, children: 'Only verified-working models are listed.' })
+  ] }) })
+}
 
 function HiveRosterChip({ m }) {
   const { color, soft } = hiveAccent(m.profile)
@@ -727,6 +839,7 @@ function HiveRosterChip({ m }) {
             jsx('span', { style: { color }, className: 'font-medium', children: '@' + m.profile }),
             m.browser && jsx(icons.Globe, { size: 12, style: { color } }),
             m.muted && jsx('span', { className: 'uppercase tracking-wide text-muted-foreground', style: HIVE_T.xs, children: 'muted' }),
+            m.modelLabel && jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, title: m.modelLabel, children: m.modelLabel }),
             m.status === 'streaming' && jsx('span', { className: 'animate-pulse', style: HIVE_T.streamDots, children: '…' })
           ]
         })
@@ -739,6 +852,7 @@ function HiveRosterChip({ m }) {
           jsx(DropdownMenuItem, { onSelect: () => { $hiveView.set('soul:' + m.profile); haptic('tap') }, children: 'Edit SOUL / persona' }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveToggleMute(m.profile), children: m.muted ? 'Unmute' : 'Mute' }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveSetBrowser(m.profile, !m.browser), children: m.browser ? 'Release browser control' : 'Grant browser control' }),
+          jsx(HiveModelSubmenu, { m }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveFreshContext(m.profile), children: 'Fresh context (new session)' }),
           jsx(DropdownMenuSeparator, {}),
           jsx(DropdownMenuItem, { variant: 'destructive', onSelect: () => hiveRemoveMember(m.profile), children: 'Remove from room' })
