@@ -106,11 +106,19 @@ const $hiveTimelineMode = atom('agents')
 const $hiveAgentExpanded = atom({}) // { [profile]: true|false } — default collapsed
 // Attention chips: last time a group was expanded, per profile (unseen counting).
 const $hiveGroupSeen = atom({}) // { [profile]: ts }
+// Live model catalog (ModelOptionsResponse.providers) fetched from the
+// gateway's `model.options` RPC — the SAME source the built-in picker uses.
+// `null` = not loaded yet; [] = loaded but nothing configured.
+const $hiveModelCatalog = atom(null)
+// Cache of the last successful fetch so the picker doesn't re-fetch on every
+// open (the desktop's model options query is cached the same way).
+let _hiveModelCatalogAt = 0
+const HIVE_MODEL_CATALOG_TTL = 60_000 // 60s — providers/models rarely change mid-session
 // The page is opened through the sidebar, command palette, and internal actions.
 // Keep one imperative opener so reset/actions can return the user to the room
 // without trying to mutate the desktop pane tree.
 let hiveOpenPage = null
-const HIVE_PLUGIN_VERSION = 'v1.4'
+const HIVE_PLUGIN_VERSION = 'v1.5'
 // Completion dedup: session -> last-processed timestamp.
 const _hiveProcessed = new Map()
 // Profiles whose next turn is the seeded room brief ack (suppressed from TL).
@@ -315,6 +323,80 @@ function hiveModelAssignmentBody(entry, profile) {
   if (entry.base_url) body.base_url = entry.base_url
   if (profile) body.profile = profile
   return body
+}
+
+/** Flatten a `model.options` provider list into manifest-shaped entries.
+ *  `providers` is the raw ModelOptionsResponse.providers array (may be null).
+ *  Pure/data. Each provider with a non-empty `models` array yields one entry
+ *  per model: { provider: slug, model, label: model }. Providers with an
+ *  `api_url` (user-defined OpenAI-compatible endpoints) also carry
+ *  `base_url` so switching keeps the endpoint. */
+function hiveCatalogToEntries(providers) {
+  if (!Array.isArray(providers)) return []
+  const out = []
+  for (const p of providers) {
+    if (!p || typeof p.slug !== 'string' || !p.slug) continue
+    const models = Array.isArray(p.models) ? p.models : []
+    if (!models.length) continue
+    for (const model of models) {
+      const entry = { provider: p.slug, model, label: model }
+      if (p.api_url) entry.base_url = p.api_url
+      out.push(entry)
+    }
+  }
+  return out
+}
+
+/** Merge the live catalog with the curated manifest, de-duplicated by
+ *  provider::model key. Curated entries win (they carry the human label);
+ *  catalog-only models are appended so EVERY available provider/model shows.
+ *  Pure/data. */
+function hiveMergeCatalogEntries(catalog, curated) {
+  const out = []
+  const seen = new Set()
+  const push = (e) => {
+    if (!e || !e.provider || !e.model) return
+    const k = hiveModelKey(e)
+    if (seen.has(k)) return
+    seen.add(k)
+    out.push(e)
+  }
+  for (const c of curated || []) push(c)
+  for (const c of catalog || []) push(c)
+  return out
+}
+
+/** Group entries by provider (preserving first-appearance order) for the
+ *  grouped model picker. Returns [{ provider, label, entries }]. Pure/data. */
+function hiveGroupEntriesByProvider(entries) {
+  const groups = []
+  const idx = {}
+  for (const e of entries || []) {
+    if (!e || !e.provider) continue
+    if (!(e.provider in idx)) {
+      idx[e.provider] = groups.length
+      groups.push({ provider: e.provider, label: e.provider, entries: [] })
+    }
+    groups[idx[e.provider]].entries.push(e)
+  }
+  return groups
+}
+
+/** Pick a short display label for an entry in the grouped picker. Prefers the
+ *  curated human label, else the bare model id. */
+function hiveEntryDisplayLabel(e) {
+  return (e && e.label) || (e && e.model) || ''
+}
+
+/** Best-effort human label for a member's current model from the LIVE catalog
+ *  (used when the member's stored model isn't in the curated manifest). */
+function hiveResolveModelLabel(provider, model, catalog) {
+  const key = hiveNormalize(String(provider || '')) + '::' + (model || '')
+  const curated = (HIVE_WORKING_MODELS || []).find((e) => hiveModelKey(e) === key)
+  if (curated) return curated.label
+  const flat = hiveCatalogToEntries(catalog)
+  const found = flat.find((e) => hiveModelKey(e) === key)
+  return found ? found.label : ''
 }
 
 /** Group a flat timeline into per-agent sections, preserving intra-agent order.
@@ -907,6 +989,35 @@ async function hiveSetMemberModel(profile, entry) {
   return res
 }
 
+/** Fetch the live model catalog from the gateway's `model.options` RPC —
+ *  the SAME source the built-in picker uses (explicit_only: true → only
+ *  configured providers). Cached for HIVE_MODEL_CATALOG_TTL. Resolves to the
+ *  providers array, or [] on any failure (callers fall back to the curated
+ *  manifest). */
+async function hiveFetchModelCatalog() {
+  const now = Date.now()
+  if ($hiveModelCatalog.get() !== null && now - _hiveModelCatalogAt < HIVE_MODEL_CATALOG_TTL) {
+    return $hiveModelCatalog.get()
+  }
+  try {
+    const res = await host.request('model.options', { explicit_only: true })
+    const providers = (res && res.providers) || []
+    $hiveModelCatalog.set(providers)
+    _hiveModelCatalogAt = now
+    return providers
+  } catch (err) {
+    console.warn('[buzz-hive] model.options failed, falling back to curated manifest', err)
+    return []
+  }
+}
+
+/** Fresh catalog-backed entry list for the picker: curated manifest first
+ *  (human labels), then every model from the live catalog. Uses the cached
+ *  catalog when present so the dropdown renders instantly on reopen. */
+function hivePickerEntries() {
+  return hiveMergeCatalogEntries(hiveCatalogToEntries($hiveModelCatalog.get()), HIVE_WORKING_MODELS)
+}
+
 async function hiveSetBrowser(profile, on) {
   const list = $hiveMembers.get()
   const key = hiveNormalize(profile)
@@ -1017,21 +1128,33 @@ async function hiveBootHydrate() {
 
 // ── UI ──────────────────────────────────────────────────────────────────────
 
-/** Low-profile per-member model selector. Lists ONLY the curated WORKING
- *  models (HIVE_WORKING_MODELS). Checkmark on the member's current model.
- *  Picking one sets it profile-wide via /api/model/set + fresh-contexts. */
+/** Low-profile per-member model selector. Lists the LIVE model catalog
+ *  (all configured providers/models, grouped by provider) PLUS the curated
+ *  working manifest — curated entries first (human labels), then every
+ *  catalog model. Checkmark on the member's current model. Picking one sets
+ *  it profile-wide via /api/model/set + fresh-contexts. */
 function HiveModelSubmenu({ m }) {
   const currentKey = m && m.model && m.provider ? 'm-' + hiveModelKey({ provider: m.provider, model: m.model }) : ''
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [catalogState, setCatalogState] = useState('loading') // 'loading' | 'ready' | 'error'
+  useEffect(() => {
+    let alive = true
+    hiveFetchModelCatalog()
+      .then(() => { if (alive) setCatalogState('ready') })
+      .catch(() => { if (alive) setCatalogState('error') })
+    return () => { alive = false }
+  }, [])
   const pick = (key) => {
-    const entry = HIVE_WORKING_MODELS.find((e) => 'm-' + hiveModelKey(e) === key)
+    const entry = hivePickerEntries().find((e) => 'm-' + hiveModelKey(e) === key)
     if (!entry) return
     setBusy(true); setErr('')
     void hiveSetMemberModel(m.profile, entry)
-      .then(() => { setBusy(false); host.notify({ kind: 'success', message: `@${m.profile} → ${entry.label}. Model set + fresh session.` }) })
+      .then(() => { setBusy(false); host.notify({ kind: 'success', message: `@${m.profile} → ${hiveEntryDisplayLabel(entry)}. Model set + fresh session.` }) })
       .catch((e) => { setBusy(false); setErr((e && e.message) || 'Set failed.') })
   }
+  const entries = hivePickerEntries()
+  const groups = hiveGroupEntriesByProvider(entries)
   return jsx('div', { className: 'px-1 py-1', 'data-hive-model': true, children: jsxs('div', { className: 'flex flex-col gap-1', children: [
     jsxs('div', { className: 'flex items-center gap-2 px-2', children: [
       jsx('span', { className: 'shrink-0 text-muted-foreground', style: HIVE_T.xs, children: 'Model' }),
@@ -1041,15 +1164,21 @@ function HiveModelSubmenu({ m }) {
         children: [
           jsx(SelectTrigger, { className: 'h-6 w-full text-xs', children: jsx(SelectValue, { placeholder: m.modelLabel || 'Pick model' }) }),
           jsx(SelectContent, {
-            children: HIVE_WORKING_MODELS.map((e) =>
-              jsx(SelectItem, { key: 'm-' + hiveModelKey(e), value: 'm-' + hiveModelKey(e), children: e.label })
-            )
+            className: 'max-h-72',
+            children: [
+              catalogState === 'loading' && entries.length === 0 && jsx('div', { className: 'px-2 py-1.5 text-muted-foreground', style: HIVE_T.xs, children: 'Loading available models…' }),
+              catalogState === 'error' && entries.length === 0 && jsx('div', { className: 'px-2 py-1.5 text-muted-foreground', style: HIVE_T.xs, children: 'Could not load model list — showing curated models.' }),
+              groups.map((g) => jsxs('div', { key: g.provider, children: [
+                jsx('div', { className: 'px-2 pt-2 pb-1 text-[0.65rem] font-medium uppercase tracking-wide text-muted-foreground', children: g.label }),
+                g.entries.map((e) => jsx(SelectItem, { key: 'm-' + hiveModelKey(e), value: 'm-' + hiveModelKey(e), className: 'font-mono text-xs', children: hiveEntryDisplayLabel(e) }))
+              ] }))
+            ]
           })
         ]
       })
     ] }),
     err && jsx('div', { className: 'px-2 text-destructive', style: HIVE_T.xs, children: err }),
-    jsx('div', { className: 'px-2 text-muted-foreground', style: HIVE_T.xs, children: 'Only verified-working models are listed.' })
+    jsx('div', { className: 'px-2 text-muted-foreground', style: HIVE_T.xs, children: 'All configured providers & models are listed.' })
   ] }) })
 }
 

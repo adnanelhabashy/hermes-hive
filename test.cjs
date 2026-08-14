@@ -18,7 +18,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 
 // HIVE_DIGEST_LEN is defined above the markers; inject it for the sliced scope.
 const factory = new Function(
-  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen }`
+  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen }`
 )
 const {
   hiveParseCoordination,
@@ -34,6 +34,11 @@ const {
   hiveModelKey,
   hiveResolveModelEntry,
   hiveModelAssignmentBody,
+  hiveCatalogToEntries,
+  hiveMergeCatalogEntries,
+  hiveGroupEntriesByProvider,
+  hiveEntryDisplayLabel,
+  hiveResolveModelLabel,
   hiveGroupTimeline,
   hiveToggleAgentExpanded,
   HIVE_TURN_OPEN,
@@ -233,6 +238,45 @@ console.log('hiveModelKey + hiveResolveModelEntry + hiveModelAssignmentBody')
     profile: 'frontend'
   })
   assert('null entry → null body', hiveModelAssignmentBody(null, 'x') === null)
+}
+
+console.log('live catalog → picker entries (all providers/models)')
+{
+  const providers = [
+    { slug: 'openrouter', name: 'OpenRouter', models: ['poolside/laguna-s-2.1:free', 'anthropic/claude-sonnet-4'] },
+    { slug: 'nous', name: 'Nous', models: ['z-ai/glm-5.2'] },
+    { slug: 'custom:qwen-token-plan', name: 'Qwen Token Plan', api_url: 'https://token-plan.example/anthropic', models: ['qwen3.8-max-preview'] },
+    { slug: 'unconfigured', name: 'Unconfigured', models: [] },
+    { slug: 'broken', name: 'Broken' } // no models key
+  ]
+  const flat = hiveCatalogToEntries(providers)
+  deep('flattens each provider model', flat.map((e) => `${e.provider}::${e.model}`), [
+    'openrouter::poolside/laguna-s-2.1:free',
+    'openrouter::anthropic/claude-sonnet-4',
+    'nous::z-ai/glm-5.2',
+    'custom:qwen-token-plan::qwen3.8-max-preview'
+  ])
+  assert('skips empty/missing model arrays', flat.length === 4)
+  assert('carries api_url as base_url for user-defined providers', flat.find((e) => e.provider === 'custom:qwen-token-plan').base_url === 'https://token-plan.example/anthropic')
+  assert('null providers → empty', Array.isArray(hiveCatalogToEntries(null)) && hiveCatalogToEntries(null).length === 0)
+
+  const merged = hiveMergeCatalogEntries(flat, HIVE_WORKING_MODELS)
+  const keys = new Set(merged.map((e) => hiveModelKey(e)))
+  assert('merge dedupes provider::model', keys.size === merged.length)
+  assert('curated entry wins label for qwen-token-plan', merged.find((e) => e.provider === 'custom:qwen-token-plan' && e.model === 'qwen3.8-max-preview').label.includes('Qwen 3.8'))
+  assert('catalog-only model is appended (openrouter sonnet)', merged.some((e) => e.provider === 'openrouter' && e.model === 'anthropic/claude-sonnet-4'))
+  assert('every catalog model reachable', merged.some((e) => e.provider === 'nous' && e.model === 'z-ai/glm-5.2'))
+
+  const groups = hiveGroupEntriesByProvider(merged)
+  assert('groups contain every provider', groups.length >= 4)
+  const openrouter = groups.find((g) => g.provider === 'openrouter')
+  assert('group preserves catalog models', !!openrouter && openrouter.entries.length === 2)
+
+  deep('display label prefers curated', hiveEntryDisplayLabel({ provider: 'x', model: 'm', label: 'Nice' }), 'Nice')
+  deep('display label falls back to model', hiveEntryDisplayLabel({ provider: 'x', model: 'm' }), 'm')
+  deep('curated label resolution', hiveResolveModelLabel('custom:qwen-token-plan', 'qwen3.8-max-preview', flat), 'Qwen 3.8 Max (token plan)')
+  assert('catalog label resolution for uncurated model', hiveResolveModelLabel('openrouter', 'anthropic/claude-sonnet-4', providers) === 'anthropic/claude-sonnet-4')
+  assert('unknown → empty label', hiveResolveModelLabel('nope', 'nope', providers) === '')
 }
 
 console.log('hiveGroupTimeline (grouped/expandable view)')
