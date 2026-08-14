@@ -554,12 +554,13 @@ async function hiveDeliverTo(member, text, opts = {}) {
     (opts.from ? `from @${opts.from}:\n` : '') +
     text
   const busy = member.status === 'streaming' || member.status === 'thinking' || member.status === 'tool'
-  if (busy && !opts.system) hiveMarkStatus(member.sessionId, 'queued') // honest chip: queued behind current turn
+  const queued = opts.queued === true || busy
+  if (queued && !opts.system) hiveMarkStatus(member.sessionId, 'queued') // honest chip: queued behind current turn
   try {
     await host.request('prompt.submit', {
       session_id: member.sessionId,
       text: payload,
-      ...(busy && !opts.system ? { queued: true } : {})
+      ...(queued && !opts.system ? { queued: true } : {})
     })
   } catch (err) {
     host.notifyError(err, `Hive: deliver to @${member.profile} failed`)
@@ -619,6 +620,7 @@ async function hiveHandleAssistantDone(e, content) {
 
   if (_hiveSeeded.get(hiveNormalize(member.profile))) {
     _hiveSeeded.delete(hiveNormalize(member.profile))
+    hiveFoldTurn(member, '')
     return
   }
 
@@ -1284,17 +1286,31 @@ function HiveAgentGroup({ profile, messages, expanded, onToggle, unseen }) {
  *  show a "↓ latest" chip when the user has scrolled up (SPEC B5). */
 function useFollowScroll(ref, timeline) {
   const [pinned, setPinned] = useState(true)
+  const getViewport = () => {
+    const root = ref.current
+    return root?.querySelector?.('[data-slot="scroll-area-viewport"]') || root
+  }
   useEffect(() => {
-    const el = ref.current
+    const el = getViewport()
     if (el && pinned) el.scrollTop = el.scrollHeight
   }, [timeline, pinned])
+  useEffect(() => {
+    const el = getViewport()
+    if (!el) return undefined
+    const handleScroll = () => {
+      const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+      setPinned(near)
+    }
+    el.addEventListener('scroll', handleScroll)
+    return () => el.removeEventListener('scroll', handleScroll)
+  }, [])
   const onScroll = (ev) => {
     const el = ev.currentTarget
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48
     setPinned(near)
   }
   const jump = () => {
-    const el = ref.current
+    const el = getViewport()
     if (el) { el.scrollTop = el.scrollHeight; setPinned(true) }
   }
   return { pinned, onScroll, jump }
@@ -1426,7 +1442,7 @@ function HiveComposer() {
           // Honest queue state: busy targets show a clock, not a fake pulse.
           const busy = target.status === 'streaming' || target.status === 'thinking' || target.status === 'tool'
           if (busy) hiveMarkStatus(target.sessionId, 'queued')
-          void hiveDeliverTo(target, r.text, { from: 'you' })
+          void hiveDeliverTo(target, r.text, { from: 'you', queued: busy })
         }
       }
     } else {
@@ -1831,7 +1847,7 @@ export default {
       if (!m) return
       hiveTurnToolStart(m, (e.payload && (e.payload.tool || e.payload.name)) || 'tool')
     }))
-    disposers.push(host.onEvent('tool.completed', (e) => {
+    disposers.push(host.onEvent('tool.complete', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
       hiveTurnToolDone(m, (e.payload && (e.payload.tool || e.payload.name)) || '', !e.error)

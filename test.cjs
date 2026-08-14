@@ -74,6 +74,10 @@ console.log('desktop surface contract')
   assert('Hive keeps a command-palette opener', src.includes("area: PALETTE_AREA") && src.includes('host.navigate(HIVE_ROUTE)'))
   assert('Hive is no longer a shared right pane', !src.includes("area: 'panes'") && !src.includes("placement: 'right'"))
   assert('Hive wraps long prose and tokens', src.includes("overflowWrap: 'anywhere'") && src.includes('break-words'))
+  assert('Hive listens to the canonical tool completion event', src.includes("host.onEvent('tool.complete'") && !src.includes("host.onEvent('tool.completed'"))
+  assert('Seeded turns close their activity spine', src.includes("hiveFoldTurn(member, '')"))
+  assert('Direct relays preserve queue intent', src.includes("queued: busy"))
+  assert('Follow-scroll binds to the Radix viewport', src.includes("data-slot=\"scroll-area-viewport\""))
 }
 
 console.log('hiveParseCoordination')
