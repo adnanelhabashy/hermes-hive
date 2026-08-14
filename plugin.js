@@ -59,13 +59,17 @@ import {
   cn,
   profileColor,
   profileColorSoft,
-  haptic
+  haptic,
+  PALETTE_AREA,
+  ROUTES_AREA,
+  SIDEBAR_NAV_AREA
 } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 // ── config ──────────────────────────────────────────────────────────────────
 const HIVE_PLUGIN_ID = 'buzz-hive'
+const HIVE_ROUTE = '/hive'
 const HIVE_MAX_MEMBERS = 10 // profile members (You is extra, pinned)
 const HIVE_DIGEST_LEN = 12
 const HIVE_STORAGE_KEY = 'hive.v1'
@@ -82,7 +86,8 @@ const HIVE_T = Object.freeze({
   xs: { fontSize: 10, lineHeight: '14px' },
   xsRemoveMl: { fontSize: 10, lineHeight: '14px', marginLeft: 8 },
   sm: { fontSize: 11, lineHeight: '15px' },
-  streamDots: { fontSize: 10, lineHeight: 0 }
+  streamDots: { fontSize: 10, lineHeight: 0 },
+  wrap: { overflowWrap: 'anywhere', wordBreak: 'break-word' }
 })
 
 // ── reactive state ──────────────────────────────────────────────────────────
@@ -99,16 +104,13 @@ const $hiveView = atom('timeline') // 'timeline' | 'scratch' | 'soul:<profile>'
 // per-agent collapsible sections). Expand/collapse is per-agent, persisted.
 const $hiveTimelineMode = atom('agents')
 const $hiveAgentExpanded = atom({}) // { [profile]: true|false } — default collapsed
-// Streaming preview: which agent is currently answering (for the grouped header).
-const $hiveGroupLive = atom({}) // { [profile]: { text, tool } }
-// Collapse/expand is the pane-shell's NATIVE zone minimize (the standard
-// slim vertical rail with a clickable tab), not a plugin-managed rail. The
-// pane is always registered. This handle lets internal callers (reset,
-// palette open) re-assert the pane is present; it never adds a custom rail.
-let hiveSetCollapsed = null
-const HIVE_PLUGIN_VERSION = 'v1.3'
-// Live per-member stream buffers for in-flight feedback.
-const $hiveStreams = atom({}) // { [profile]: { text, tool } }
+// Attention chips: last time a group was expanded, per profile (unseen counting).
+const $hiveGroupSeen = atom({}) // { [profile]: ts }
+// The page is opened through the sidebar, command palette, and internal actions.
+// Keep one imperative opener so reset/actions can return the user to the room
+// without trying to mutate the desktop pane tree.
+let hiveOpenPage = null
+const HIVE_PLUGIN_VERSION = 'v1.4'
 // Completion dedup: session -> last-processed timestamp.
 const _hiveProcessed = new Map()
 // Profiles whose next turn is the seeded room brief ack (suppressed from TL).
@@ -174,7 +176,9 @@ function hiveBuildDigest(timeline, n = HIVE_DIGEST_LEN) {
   const rows = t.slice(-n).map((msg) => {
     const who = typeof msg.from === 'string' ? msg.from : (msg.from || {}).profile || '?'
     const tail = msg.to ? ` → @${msg.to}` : ''
-    const body = String(msg.text || '')
+    // Turn entries expose a digest-safe body (done → text, live → (working));
+    // everything else uses its text directly.
+    const body = msg && msg.kind === 'turn' ? hiveTurnDigestBody(msg) : String((msg && msg.text) || '')
     const clipped = body.length > 220 ? body.slice(0, 217) + '…' : body
     return `@${who}${tail}: ${clipped}`
   })
@@ -342,6 +346,113 @@ function hiveToggleAgentExpanded(map, profile, force) {
   return next
 }
 
+// ── turn-entry reducer (pure) ──────────────────────────────────────────────
+// A 'turn' timeline entry is the live per-member activity spine: thinking →
+// tools → streaming → done/error. Patches are pure; the RENDER layer never
+// mutates. These drive BOTH the inline spine and the grouped-header preview
+// (single source — no stream-buffer mirrors).
+
+const HIVE_TURN_OPEN = ['queued', 'thinking', 'tool', 'streaming']
+
+/** New turn entry at `ts` (ms). Kind 'turn'. */
+function hiveTurnInit(profile, ts) {
+  const now = ts || Date.now()
+  return {
+    id: 't' + Math.random().toString(36).slice(2, 9),
+    ts: now, from: hiveNormalize(profile), kind: 'turn',
+    phase: 'thinking', text: '', tool: '', tools: [],
+    startedAt: now, doneAt: 0, error: '', to: null, queuedSince: 0
+  }
+}
+
+/** Immutable merge of a patch into a turn entry. */
+function hiveTurnPatch(turn, patch) {
+  return { ...(turn || {}), ...(patch || {}) }
+}
+
+/** Record an open tool (dedup by name while running). Returns next turn. */
+function hiveTurnAddTool(turn, name, ts) {
+  const tools = (turn.tools || []).slice()
+  const open = tools.findIndex((t) => t.name === name && t.status === 'run')
+  if (open !== -1) return { ...turn, tool: name, phase: 'tool' }
+  tools.push({ name: String(name || 'tool'), ts: ts || Date.now(), dur: 0, status: 'run' })
+  return { ...turn, tool: String(name || 'tool'), phase: 'tool', tools }
+}
+
+/** Close a recorded tool with duration. Returns next turn (back to streaming). */
+function hiveTurnFinishTool(turn, name, ts, status) {
+  const fin = ts || Date.now()
+  const st = status || 'ok'
+  const tools = (turn.tools || []).map((t) =>
+    t.name === name ? { ...t, status: st, dur: Math.max(0, fin - (t.ts || fin)) } : t)
+  return { ...turn, tool: '', phase: 'streaming', tools }
+}
+
+/** Append streamed text. Queued stays queued until the turn actually starts. */
+function hiveTurnAppendText(turn, text) {
+  const wasQueued = turn.phase === 'queued'
+  return { ...turn, text: (turn.text || '') + (text || ''), phase: wasQueued ? 'queued' : 'streaming' }
+}
+
+/** Mark the turn queued (relay behind a busy member) at `ts`. */
+function hiveTurnQueued(turn, ts) {
+  return { ...turn, phase: 'queued', queuedSince: ts || Date.now() }
+}
+
+/** Fold the turn into its final message. `finalText` defaults to streamed text. */
+function hiveTurnFold(turn, finalText, doneAt) {
+  return {
+    ...turn, phase: 'done', tool: '',
+    text: finalText != null ? String(finalText) : String(turn.text || ''),
+    doneAt: doneAt || Date.now()
+  }
+}
+
+/** Mark the turn failed with an error message. */
+function hiveTurnError(turn, error, ts) {
+  return {
+    ...turn, phase: 'error', tool: '',
+    error: String(error || 'turn failed'),
+    doneAt: ts || Date.now()
+  }
+}
+
+/** Digest-safe body for a turn entry: done → text, error → (error), else working. */
+function hiveTurnDigestBody(turn) {
+  if (!turn) return ''
+  if (turn.phase === 'done') return String(turn.text || '').slice(0, 220)
+  if (turn.phase === 'error') return `(error) ${String(turn.error || 'failed')}`.slice(0, 220)
+  return `(working${turn.tool ? ' · ' + turn.tool : ''})`
+}
+
+/** Latest OPEN turn for a profile (queued/thinking/tool/streaming). */
+function hiveLastOpenTurn(timeline, profile) {
+  const norm = hiveNormalize(String(profile || ''))
+  const tl = timeline || []
+  for (let i = tl.length - 1; i >= 0; i--) {
+    const m = tl[i]
+    if (m && m.kind === 'turn' && hiveNormalize(m.from) === norm && HIVE_TURN_OPEN.includes(m.phase)) return m
+  }
+  return null
+}
+
+/** Short preview for collapsed headers: live text / tool / error / working. */
+function hiveActivityPreview(turn) {
+  if (!turn) return ''
+  if (turn.phase === 'error') return String(turn.error || 'failed')
+  const t = String(turn.text || '').trim().replace(/\s+/g, ' ')
+  if (t) return t.slice(0, 90)
+  if (turn.phase === 'tool' && turn.tool) return `using ${turn.tool}…`
+  return 'working…'
+}
+
+/** Count entries for a profile newer than `seenTs` (attention chips). */
+function hiveGroupUnseen(timeline, profile, seenTs) {
+  const norm = hiveNormalize(String(profile || ''))
+  const since = Number(seenTs) || 0
+  return (timeline || []).filter((m) => hiveNormalize(m.from) === norm && (m.ts || 0) > since).length
+}
+
 // --CORE-END--
 
 // ── accents ─────────────────────────────────────────────────────────────────
@@ -370,7 +481,7 @@ function hiveInline(text) {
     if (m.index > last) nodes.push(text.slice(last, m.index))
     const tok = m[0]
     if (tok.startsWith('**')) nodes.push(jsx('strong', { key: nodes.length, children: tok.slice(2, -2) }))
-    else nodes.push(jsx('code', { key: nodes.length, className: 'rounded bg-muted px-1 py-px', style: { fontSize: '0.9em' }, children: tok.slice(1, -1) }))
+    else nodes.push(jsx('code', { key: nodes.length, className: 'rounded bg-muted px-1 py-px', style: { ...HIVE_T.wrap, fontSize: '0.9em' }, children: tok.slice(1, -1) }))
     last = m.index + tok.length
   }
   if (last < text.length) nodes.push(text.slice(last))
@@ -388,7 +499,7 @@ function hiveRenderText(text) {
       const paras = blocks[i].split(/\n{2,}/)
         for (const p of paras) {
           if (!p.trim()) continue
-          out.push(jsx('div', { key: out.length, className: 'block whitespace-pre-wrap', children: hiveInline(p) }))
+          out.push(jsx('div', { key: out.length, className: 'block min-w-0 whitespace-pre-wrap break-words', style: HIVE_T.wrap, children: hiveInline(p) }))
         }
     } else {
       out.push(
@@ -442,7 +553,8 @@ async function hiveDeliverTo(member, text, opts = {}) {
     `[room digest]\n${hiveBuildDigest($hiveTimeline.get(), HIVE_DIGEST_LEN)}${scratchSection}\n\n` +
     (opts.from ? `from @${opts.from}:\n` : '') +
     text
-  const busy = member.status === 'streaming' || member.status === 'thinking'
+  const busy = member.status === 'streaming' || member.status === 'thinking' || member.status === 'tool'
+  if (busy && !opts.system) hiveMarkStatus(member.sessionId, 'queued') // honest chip: queued behind current turn
   try {
     await host.request('prompt.submit', {
       session_id: member.sessionId,
@@ -491,7 +603,9 @@ function hiveAppendScratch(profile, entry) {
   hivePersist()
 }
 
-/** Process a member's finished turn: render, relay (swarm-gated), broadcast. */
+/** Process a member's finished turn: fold the spine into its final message,
+ *  then relay (swarm-gated) per coordination grammar. The open turn entry IS
+ *  the agent's message — no duplicate 'agent' entry is appended (SPEC B4). */
 async function hiveHandleAssistantDone(e, content) {
   const member = hiveMemberBySession(e.session_id, e.profile)
   if (!member) return
@@ -501,7 +615,6 @@ async function hiveHandleAssistantDone(e, content) {
   if (now - last < 1500) return
   _hiveProcessed.set(e.session_id, now)
 
-  hiveStreamClear(member.profile)
   hiveMarkStatus(e.session_id, 'done')
 
   if (_hiveSeeded.get(hiveNormalize(member.profile))) {
@@ -510,7 +623,11 @@ async function hiveHandleAssistantDone(e, content) {
   }
 
   const finalText = (content || '').trim()
-  if (!finalText) return
+  if (!finalText) {
+    // Nothing streamed or delivered — close the spine honestly (no ghost turn).
+    hiveFoldTurn(member, '')
+    return
+  }
 
   const entries = hiveExtractScratchEntries(finalText)
   // Strip scratchpad blocks so they don't clutter the timeline or get re-relayed.
@@ -520,14 +637,16 @@ async function hiveHandleAssistantDone(e, content) {
   const from = hiveNormalize(member.profile)
   const swarm = $hiveSwarm.get()
   for (const en of entries) hiveAppendScratch(from, en)
-  const visible = [parsed.broadcast, ...parsed.relays.map((r) => r.text)].filter(Boolean).join(' ')
-  if (visible) hiveAppendTimeline({ from, kind: 'agent', text: visible, to: null })
+
+  // Floor: the turn entry becomes the final broadcast message.
+  // (Empty-scrub turns fold to an empty done row — rare, honest, no fabrication.)
+  hiveFoldTurn(member, scrubbed || parsed.broadcast || '')
 
   for (const r of parsed.relays) {
     const target = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === r.target)
     if (!target) continue
     // Non-looping: never relay to the sender, and respect mute.
-    if (!target || hiveNormalize(target.profile) === from) continue
+    if (hiveNormalize(target.profile) === from) continue
     if (target.muted) continue
     if (!swarm) {
       // Swarm off: log the intent, don't inject into the teammate.
@@ -547,9 +666,9 @@ async function hiveHandleAssistantDone(e, content) {
 async function hiveHandleFallbackCompleted(e) {
   const member = hiveMemberBySession(e.session_id, e.profile)
   if (!member) return
-  const buffered = $hiveStreams.get()[hiveNormalize(member.profile)]?.text || ''
-  const content = (e.content || '').trim() || buffered
-  if (!content) return
+  const open = hiveLastOpenTurn($hiveTimeline.get(), member.profile)
+  const content = String((e.content || '').trim() || (open ? open.text : '') || '')
+  if (!content && !open) return
   await hiveHandleAssistantDone(e, content)
 }
 
@@ -564,37 +683,106 @@ function hiveMarkStatus(sessionId, status) {
   }
 }
 
-// ── stream accumulation ─────────────────────────────────────────────────────
+// ── turn store (atom wrappers over the pure reducer) ───────────────────────
+// The timeline IS the activity store: each member's open turn is a 'turn'
+// entry, patched in place. No parallel stream buffers / live mirrors.
 
-function hiveStreamReset(profile) {
-  const key = hiveNormalize(profile)
-  const s = $hiveStreams.get()
-  $hiveStreams.set({ ...s, [key]: { text: '', tool: '' } })
+/** Open a new turn entry for a member (message.start). Auto-expands group. */
+function hiveOpenTurn(member) {
+  if (!member) return
+  const key = hiveNormalize(member.profile)
+  const tl = $hiveTimeline.get()
+  const entry = hiveTurnInit(key, Date.now())
+  $hiveTimeline.set([...tl, entry].slice(-200))
+  // Auto-expand on new activity so the working agent is never hidden (SPEC B6).
+  $hiveAgentExpanded.set(hiveToggleAgentExpanded($hiveAgentExpanded.get(), key, true))
+  hiveMarkStatus(member.sessionId, 'streaming')
+  hivePersist()
 }
-function hiveStreamAppend(profile, text) {
-  const key = hiveNormalize(profile)
-  const s = $hiveStreams.get()
-  $hiveStreams.set({ ...s, [key]: { ...(s[key] || { text: '', tool: '' }), text: (s[key]?.text || '') + (text || '') } })
-}
-function hiveStreamSetTool(profile, tool) {
-  const key = hiveNormalize(profile)
-  const s = $hiveStreams.get()
-  $hiveStreams.set({ ...s, [key]: { ...(s[key] || { text: '', tool: '' }), tool: tool || '' } })
-}
-function hiveStreamClear(profile) {
-  const key = hiveNormalize(profile)
-  const s = $hiveStreams.get()
-  if (!(key in s)) return
-  const next = { ...s }
-  delete next[key]
-  $hiveStreams.set(next)
-  // Clear the live-group preview too so the collapsed header stops showing "…".
-  const g = $hiveGroupLive.get()
-  if (key in g) {
-    const ng = { ...g }
-    delete ng[key]
-    $hiveGroupLive.set(ng)
+
+/** Find index of a member's latest OPEN turn entry (-1 if none). */
+function hiveOpenTurnIndex(member) {
+  if (!member) return -1
+  const key = hiveNormalize(member.profile)
+  const tl = $hiveTimeline.get()
+  for (let i = tl.length - 1; i >= 0; i--) {
+    const m = tl[i]
+    if (m && m.kind === 'turn' && hiveNormalize(m.from) === key && HIVE_TURN_OPEN.includes(m.phase)) return i
   }
+  return -1
+}
+
+/** Immutably replace the entry at index. */
+function hiveReplaceTurn(i, next) {
+  const tl = $hiveTimeline.get()
+  const copy = tl.slice()
+  copy[i] = next
+  $hiveTimeline.set(copy)
+}
+
+/** Patch the member's open turn (no-op if none). */
+function hivePatchOpenTurn(member, patch) {
+  const i = hiveOpenTurnIndex(member)
+  if (i === -1) return
+  hiveReplaceTurn(i, hiveTurnPatch($hiveTimeline.get()[i], patch))
+}
+
+/** Append streamed text to the member's open turn (opens one if missing). */
+function hiveAppendTurnText(member, text) {
+  if (!member || !text) return
+  const i = hiveOpenTurnIndex(member)
+  if (i === -1) {
+    hiveOpenTurn(member)
+    hiveAppendTurnText(member, text)
+    return
+  }
+  hiveReplaceTurn(i, hiveTurnAppendText($hiveTimeline.get()[i], text))
+}
+
+/** Record a tool start on the member's open turn; chip → tooling. */
+function hiveTurnToolStart(member, name) {
+  const i = hiveOpenTurnIndex(member)
+  if (i === -1) return
+  hiveReplaceTurn(i, hiveTurnAddTool($hiveTimeline.get()[i], name, Date.now()))
+  hiveMarkStatus(member.sessionId, 'tool')
+}
+
+/** Record a tool finish on the member's open turn; chip → streaming. */
+function hiveTurnToolDone(member, name, ok) {
+  const i = hiveOpenTurnIndex(member)
+  if (i === -1) return
+  hiveReplaceTurn(i, hiveTurnFinishTool($hiveTimeline.get()[i], name, Date.now(), ok ? 'ok' : 'err'))
+  hiveMarkStatus(member.sessionId, 'streaming')
+}
+
+/** Fold the member's open turn into its final message (SPEC B4 dedupe). */
+function hiveFoldTurn(member, finalText) {
+  const i = hiveOpenTurnIndex(member)
+  const tl = $hiveTimeline.get()
+  if (i === -1) {
+    // Fallback (e.g. completed without any delta): materialize a done turn.
+    const entry = hiveTurnFold(hiveTurnInit(hiveNormalize(member.profile), Date.now()), finalText || '', Date.now())
+    $hiveTimeline.set([...tl, entry].slice(-200))
+    return entry
+  }
+  const folded = hiveTurnFold(tl[i], finalText, Date.now())
+  hiveReplaceTurn(i, folded)
+  hivePersist()
+  return folded
+}
+
+/** Mark the member's open turn failed (SPEC B3 honest status). */
+function hiveTurnFail(member, error) {
+  const i = hiveOpenTurnIndex(member)
+  const tl = $hiveTimeline.get()
+  if (i === -1) {
+    const entry = hiveTurnError(hiveTurnInit(hiveNormalize(member.profile), Date.now()), error, Date.now())
+    $hiveTimeline.set([...tl, entry].slice(-200))
+    return
+  }
+  hiveReplaceTurn(i, hiveTurnError(tl[i], error, Date.now()))
+  hiveMarkStatus(member.sessionId, 'error')
+  hivePersist()
 }
 
 // ── profiles + sessions ─────────────────────────────────────────────────────
@@ -746,7 +934,7 @@ async function hiveStopMember(profile) {
   try {
     await host.request('session.interrupt', { session_id: m.sessionId })
     hiveMarkStatus(m.sessionId, 'idle')
-    hiveStreamClear(m.profile)
+    hiveFoldTurn(m, undefined) // close the spine with whatever streamed so far
     hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${m.profile} stopped`, to: null })
   } catch (err) {
     host.notifyError(err, `Hive: couldn't stop @${m.profile}`)
@@ -765,10 +953,10 @@ async function hiveResetRoom() {
   _hiveSeeded.clear()
   $hiveTimeline.set([])
   $hiveMembers.set([])
-  $hiveStreams.set({})
+  $hiveGroupSeen.set({})
   $hiveSwarm.set(true)
   $hiveView.set('timeline')
-  if (hiveSetCollapsed) hiveSetCollapsed(false)
+  if (hiveOpenPage) hiveOpenPage()
   hivePersist()
   console.log('[buzz-hive] reset room: cleared, minting fresh @default')
   await hiveMintMember('default')
@@ -865,9 +1053,28 @@ function HiveModelSubmenu({ m }) {
 
 function HiveRosterChip({ m }) {
   const { color, soft } = hiveAccent(m.profile)
-  const statusTone = m.status === 'streaming' ? 'warn' : m.status === 'done' ? 'good' : m.status === 'error' ? 'bad' : m.muted ? 'muted' : 'good'
   const sessionRef = m.storedId || m.sessionId || undefined
-  const dots = m.status === 'streaming' ? 'warn' : 'muted'
+  // Phase glyph + tone — honest status vocabulary (SPEC B3): queued clock,
+  // thinking dots, tooling gear, streaming pulse, error cross, done check.
+  const phase = m.status
+  const glyph =
+    phase === 'queued' ? '⏳'
+    : phase === 'thinking' ? '···'
+    : phase === 'tool' ? '⚙'
+    : phase === 'streaming' ? '…'
+    : phase === 'error' ? '✕'
+    : phase === 'done' ? '✓'
+    : ''
+  const glyphPulse = phase === 'thinking' || phase === 'tool' || phase === 'streaming'
+  const glyphTone = phase === 'error' ? { color: 'var(--ui-danger, #e5484d)' } : phase === 'done' ? HIVE_T.xs : HIVE_T.streamDots
+  const statusLabel =
+    phase === 'queued' ? 'queued behind current turn'
+    : phase === 'thinking' ? 'thinking…'
+    : phase === 'tool' ? 'using a tool…'
+    : phase === 'streaming' ? 'answering…'
+    : phase === 'error' ? 'errored'
+    : phase === 'done' ? 'done'
+    : 'idle'
   return jsx(DropdownMenu, {
     children: [
       jsx(DropdownMenuTrigger, {
@@ -875,7 +1082,7 @@ function HiveRosterChip({ m }) {
         children: jsx('div', {
           'data-role': 'member',
           style: { borderColor: color, background: soft },
-          title: m.muted ? `@${m.profile} (muted)` : `@${m.profile} · session ${sessionRef || 'pending'}`,
+          title: `${m.muted ? '(muted) ' : ''}@${m.profile} · ${statusLabel} · session ${sessionRef || 'pending'}`,
           className: cn(
             'flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 text-xs select-none',
             m.browser && 'ring-1',
@@ -887,7 +1094,7 @@ function HiveRosterChip({ m }) {
             m.browser && jsx(icons.Globe, { size: 12, style: { color } }),
             m.muted && jsx('span', { className: 'uppercase tracking-wide text-muted-foreground', style: HIVE_T.xs, children: 'muted' }),
             m.modelLabel && jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, title: m.modelLabel, children: m.modelLabel }),
-            m.status === 'streaming' && jsx('span', { className: 'animate-pulse', style: HIVE_T.streamDots, children: '…' })
+            glyph && jsx('span', { className: cn(glyphPulse && 'animate-pulse'), style: { ...glyphTone, fontSize: 10 }, children: glyph })
           ]
         })
       }),
@@ -915,65 +1122,139 @@ async function hiveToggleMute(profile) {
   hivePersist()
 }
 
-function HiveMemberTone({ from, to, text, ts }) {
+function HiveMemberTone({ m }) {
+  const from = (m && m.from) || ''
+  const to = (m && m.to) || null
+  const text = (m && m.text) || ''
+  const ts = (m && m.ts) || Date.now()
+  const kind = (m && m.kind) || 'agent'
   const isYou = from === 'you'
-  const accent = isYou ? hiveAccent('you') : hiveAccent(from)
   const isSystem = from === 'system'
-  const label = isSystem ? 'hive' : `@${from}${to ? ' → @' + to : ''}`
+  const isRelay = kind === 'relay' && !!to
+  const accent = isYou || isSystem ? hiveAccent('you') : hiveAccent(from)
+  const label = isSystem ? 'hive' : isRelay ? `@${from} → @${to}` : `@${from}`
   return jsx('div', {
     className: 'group flex gap-2 rounded-md py-1 pl-1.5',
-    style: isSystem ? undefined : { borderLeft: `2px solid ${accent.color}`, background: isYou ? undefined : accent.soft },
+    style: isSystem ? undefined : { borderLeft: `2px solid ${accent.color}`, background: isYou && !isRelay ? undefined : accent.soft },
     children: isSystem
-      ? jsx('div', { className: 'italic leading-snug text-muted-foreground', style: HIVE_T.sm, children: text })
+      ? jsx('div', { className: 'italic min-w-0 leading-snug text-muted-foreground', style: { ...HIVE_T.sm, ...HIVE_T.wrap }, children: text })
       : jsxs('div', { className: 'flex min-w-0 flex-col gap-0.5', children: [
           jsxs('div', { className: 'flex items-center gap-2 uppercase tracking-wide', style: HIVE_T.xs, children: [
             jsx('span', { style: { color: accent.color }, className: 'font-semibold', children: label }),
-            jsx('time', { style: { fontSize: 9, lineHeight: '14px', color: 'rgba(128,128,128,0.65)' }, children: hiveTime(ts) })
+            isRelay && jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: '⤷ relay' }),
+            jsx('time', { className: 'text-muted-foreground', style: { fontSize: 11, lineHeight: '14px' }, children: hiveTime(ts) })
           ] }),
-          jsx('div', { className: 'min-w-0 text-sm leading-relaxed text-foreground', children: hiveRenderText(text) })
+          jsx('div', { className: 'min-w-0 break-words text-sm leading-relaxed text-foreground', style: HIVE_T.wrap, children: hiveRenderText(text) })
         ] })
   })
 }
 
-function HiveLiveRow() {
-  const streams = useValue($hiveStreams)
+/** Seconds → compact duration ("4s", "2m 12s"). */
+function hiveFmtDur(ms) {
+  const s = Math.max(0, Math.round((ms || 0) / 1000))
+  if (s < 60) return s + 's'
+  return Math.floor(s / 60) + 'm ' + (s % 60) + 's'
+}
+
+/** Per-turn activity spine: thinking → tools → streaming → done/error/queued.
+ *  Renders INLINE where the turn started (SPEC B2/B3). Tools keep a
+ *  collapsible trailer after completion. */
+function HiveTurnRow({ turn }) {
   const members = useValue($hiveMembers)
-  const active = members.filter((m) => m.status === 'streaming')
-  if (active.length === 0) return null
-  return jsx('div', {
-    className: 'flex flex-col gap-1 px-2 pb-1',
-    'data-hive-live': true,
-    children: active.map((m) => {
-      const { color, soft } = hiveAccent(m.profile)
-      const s = streams[hiveNormalize(m.profile)] || { text: '', tool: '' }
-      const preview = s.text.trim().replace(/\s+/g, ' ').slice(0, 180)
-      return jsx('div', {
-        key: m.profile,
-        className: 'flex items-start gap-1.5 rounded-md border border-dashed px-2 py-1.5 text-xs',
-        style: { borderColor: color, background: soft },
-        children: [
-          jsx('span', { style: { color }, className: 'shrink-0 font-semibold', children: '@' + m.profile }),
-          jsx('span', { className: 'shrink-0 animate-pulse text-muted-foreground', children: '•••' }),
-          jsx('span', { className: 'min-w-0 flex-1 truncate text-muted-foreground', children: preview || (s.tool ? `using ${s.tool}…` : 'thinking…') })
-        ]
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const accent = hiveAccent(turn.from)
+  const tools = turn.tools || []
+  const running = tools.filter((t) => t.status === 'run')
+  const now = Date.now()
+  const dur = (turn.doneAt || now) - turn.startedAt
+  const busy = turn.phase === 'queued' || turn.phase === 'thinking' || turn.phase === 'tool' || turn.phase === 'streaming'
+  const member = members.find((mm) => hiveNormalize(mm.profile) === hiveNormalize(turn.from))
+  const retry = () => {
+    if (!member) return
+    const body = String(turn.text || '').trim() || 'Retry the last request.'
+    void hiveDeliverTo(member, body, { from: 'you' })
+  }
+  const stop = () => { if (member) void hiveStopMember(member.profile) }
+
+  return jsxs('div', {
+    'data-hive-turn': turn.phase,
+    className: cn('flex flex-col gap-1 rounded-md py-1 pl-1.5'),
+    style: { borderLeft: `2px solid ${accent.color}`, background: accent.soft },
+    children: [
+      // header
+      jsxs('div', { className: 'flex items-center gap-2', style: HIVE_T.xs, children: [
+        jsx('span', { style: { color: accent.color }, className: 'font-semibold uppercase tracking-wide', children: '@' + turn.from }),
+        turn.phase === 'queued' && jsx('span', { className: 'text-muted-foreground', children: '⏳ queued behind current turn' }),
+        turn.phase === 'thinking' && jsx('span', { className: 'animate-pulse text-muted-foreground', children: 'thinking…' }),
+        turn.phase === 'tool' && jsx('span', { className: 'animate-pulse text-muted-foreground', children: `⚙ ${turn.tool || 'tool'}` }),
+        turn.phase === 'streaming' && jsx('span', { className: 'animate-pulse text-muted-foreground', children: 'answering…' }),
+        turn.phase === 'error' && jsx('span', { style: { color: 'var(--ui-danger, #e5484d)' }, className: 'font-semibold', children: '✕ error' }),
+        turn.phase === 'done' && jsx('span', { className: 'text-muted-foreground', children: '✓ done' }),
+        jsx('time', { className: 'text-muted-foreground', style: { fontSize: 11, lineHeight: '14px' }, children: hiveTime(turn.ts) }),
+        busy && jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: hiveFmtDur(dur) })
+      ] }),
+      // running tools
+      ...running.map((t) =>
+        jsx('div', { key: 'run-' + t.name, className: 'flex items-center gap-1.5 text-muted-foreground', style: HIVE_T.sm, children: [
+          jsx('span', { className: 'animate-pulse', children: '⚙' }),
+          jsx('span', { className: 'truncate', children: t.name }),
+          jsx('span', { style: HIVE_T.xs, children: hiveFmtDur(now - t.ts) })
+        ] })
+      ),
+      // streaming text
+      (turn.phase === 'streaming' || turn.phase === 'queued') && turn.text && jsx('div', {
+        className: 'min-w-0 break-words whitespace-pre-wrap text-sm leading-relaxed text-foreground',
+        style: HIVE_T.wrap,
+        children: turn.text.length > 600 ? turn.text.slice(-600) : turn.text
+      }),
+      // fielded text (folded done turn)
+      turn.phase === 'done' && turn.text && jsx('div', { className: 'min-w-0 break-words text-sm leading-relaxed text-foreground', style: HIVE_T.wrap, children: hiveRenderText(turn.text) }),
+      // error card
+      turn.phase === 'error' && jsx('div', {
+        className: 'rounded-md border p-2 text-xs',
+        style: { borderColor: 'var(--ui-danger, #e5484d)', background: 'color-mix(in srgb, var(--ui-danger, #e5484d) 8%, transparent)' },
+        children: jsxs('div', { className: 'flex flex-col gap-1.5', children: [
+          jsx('div', { className: 'min-w-0 break-words text-destructive', style: HIVE_T.wrap, children: turn.error || 'turn failed' }),
+          jsxs('div', { className: 'flex gap-1.5', children: [
+            jsx(Button, { size: 'sm', variant: 'outline', onClick: retry, children: 'Retry' }),
+            jsx(Button, { size: 'sm', variant: 'ghost', onClick: stop, children: 'Stop' })
+          ] })
+        ] })
+      }),
+      // done tools trailer (collapsible — the reply stays the hero)
+      turn.phase === 'done' && tools.length > 0 && jsx('button', {
+        type: 'button',
+        onClick: () => setToolsOpen((v) => !v),
+        className: 'self-start text-muted-foreground',
+        style: HIVE_T.xs,
+        children: toolsOpen
+          ? `▾ ${tools.length} tool${tools.length > 1 ? 's' : ''} · ${tools.filter((t) => t.status === 'err').length} failed`
+          : `▸ ${tools.length} tool${tools.length > 1 ? 's' : ''} · ${tools.filter((t) => t.status === 'err').length} failed`
+      }),
+      toolsOpen && turn.phase === 'done' && jsx('div', { className: 'flex flex-col gap-0.5', children:
+        tools.map((t) => jsx('div', { key: t.name + t.ts, className: 'flex items-center gap-1.5 text-muted-foreground', style: HIVE_T.xs, children: [
+          jsx('span', { className: t.status === 'err' ? 'text-destructive' : undefined, children: t.status === 'err' ? '✕' : '✓' }),
+          jsx('span', { className: 'min-w-0 flex-1 truncate', children: t.name }),
+          t.dur ? jsx('span', { children: hiveFmtDur(t.dur) }) : null
+        ] }))
       })
-    })
+    ]
   })
 }
 
-/** Per-agent collapsible section in the grouped timeline. Header shows the
- *  agent color+name, message count, a live-stream preview, and a chevron that
- *  expands/collapses that agent's work. Low-profile when collapsed. */
-function HiveAgentGroup({ group, expanded, onToggle }) {
-  const { profile, messages } = group
+/** Per-agent collapsible section in the grouped timeline. Header preview is
+ *  DERIVED from the actual timeline entries (reactive — the timeline atom
+ *  changes on every delta), so the header always shows the live spine state.
+ *  Attention chip ("● N new") appears when collapsed with unseen messages. */
+function HiveAgentGroup({ profile, messages, expanded, onToggle, unseen }) {
   const isSystem = profile === 'system'
-  const { color, soft } = isSystem ? { color: 'rgba(128,128,128,0.6)', soft: 'rgba(128,128,128,0.07)' } : hiveAccent(profile)
-  const live = $hiveGroupLive.get()[profile]
+  const { color, soft } = isSystem ? { color: 'var(--ui-text-quaternary)', soft: 'transparent' } : hiveAccent(profile)
   const last = messages[messages.length - 1]
-  const preview = live && live.text ? live.text.trim().replace(/\s+/g, ' ').slice(0, 90)
+  const lastIsTurn = last && last.kind === 'turn'
+  const busy = lastIsTurn && (last.phase === 'thinking' || last.phase === 'tool' || last.phase === 'streaming' || last.phase === 'queued')
+  const preview = lastIsTurn ? hiveActivityPreview(last)
     : last ? String(last.text || '').trim().replace(/\s+/g, ' ').slice(0, 90) : ''
   const count = messages.length
-  const busy = !!(live && (live.text || live.tool))
   return jsxs('div', {
     className: 'rounded-lg border', style: { borderColor: color, background: isSystem ? 'transparent' : soft },
     'data-hive-group': profile, 'data-expanded': expanded ? 'true' : 'false',
@@ -988,67 +1269,100 @@ function HiveAgentGroup({ group, expanded, onToggle }) {
           jsx('span', { className: 'rounded-full shrink-0', style: { ...HIVE_T.dot, background: color } }),
           jsx('span', { style: { color }, className: 'shrink-0 font-semibold', children: isSystem ? 'hive' : '@' + profile }),
           busy && jsx('span', { className: 'shrink-0 animate-pulse text-muted-foreground', style: HIVE_T.xs, children: '…' }),
-          jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: expanded ? `${count} msg` : (preview || (busy ? 'working…' : `${count} msg`)) })
+          jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: expanded ? `${count} msg` : (preview || (busy ? 'working…' : `${count} msg`)) }),
+          unseen > 0 && !expanded && jsx('span', { className: 'shrink-0 rounded-full px-1.5 text-[10px] font-medium', style: { background: color, color: '#fff' }, children: `● ${unseen} new` })
         ] })
       }),
       expanded && jsx('div', { className: 'flex flex-col gap-0.5 px-1 pb-1', children:
-        messages.map((m) => jsx(HiveMemberTone, { key: m.id, from: m.from, to: m.to, text: m.text, ts: m.ts }))
+        messages.map((m) => m.kind === 'turn' ? jsx(HiveTurnRow, { key: m.id, turn: m }) : jsx(HiveMemberTone, { key: m.id, m }))
       })
     ]
   })
+}
+
+/** Shared follow-mode scroll: auto-scroll only while pinned near the bottom;
+ *  show a "↓ latest" chip when the user has scrolled up (SPEC B5). */
+function useFollowScroll(ref, timeline) {
+  const [pinned, setPinned] = useState(true)
+  useEffect(() => {
+    const el = ref.current
+    if (el && pinned) el.scrollTop = el.scrollHeight
+  }, [timeline, pinned])
+  const onScroll = (ev) => {
+    const el = ev.currentTarget
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    setPinned(near)
+  }
+  const jump = () => {
+    const el = ref.current
+    if (el) { el.scrollTop = el.scrollHeight; setPinned(true) }
+  }
+  return { pinned, onScroll, jump }
 }
 
 /** Grouped timeline: each agent's work is its own expandable section. */
 function HiveGroupedTimeline() {
   const timeline = useValue($hiveTimeline)
   const expanded = useValue($hiveAgentExpanded)
+  const seen = useValue($hiveGroupSeen)
   const ref = useRef(null)
-  useEffect(() => {
-    const el = ref.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [timeline.length])
+  const follow = useFollowScroll(ref, timeline)
   const groups = useMemo(() => hiveGroupTimeline(timeline), [timeline])
   const toggle = (profile) => {
-    $hiveAgentExpanded.set(hiveToggleAgentExpanded($hiveAgentExpanded.get(), profile))
+    const next = hiveToggleAgentExpanded($hiveAgentExpanded.get(), profile)
+    $hiveAgentExpanded.set(next)
+    // Expanding marks this group's messages as seen (attention chips reset).
+    if (next[hiveNormalize(profile)]) {
+      $hiveGroupSeen.set({ ...$hiveGroupSeen.get(), [hiveNormalize(profile)]: Date.now() })
+    }
     hivePersist()
   }
-  return jsx(ScrollArea, {
-    ref, className: 'h-full grow min-h-0',
-    children: jsx('div', { className: 'flex flex-col gap-1 p-2', 'data-hive-grouped': true, children: [
-      ...(groups.length
-        ? groups.map((g) => jsx(HiveAgentGroup, {
-            key: g.profile, group: g,
-            expanded: !!expanded[g.profile],
-            onToggle: () => toggle(g.profile)
-          }))
-        : [jsx('div', { key: 'empty', className: 'p-6 text-center text-xs text-muted-foreground', children: 'No activity yet. Message @default or add agents to start the crew.' })]),
-      jsx(HiveLiveRow, { key: 'live' })
-    ] })
-  })
+  return jsx('div', { className: 'relative h-full grow min-h-0', children: [
+    jsx(ScrollArea, {
+      ref, className: 'h-full grow min-h-0', onScroll: follow.onScroll,
+      children: jsx('div', { className: 'flex flex-col gap-1 p-2', 'data-hive-grouped': true, children:
+        groups.length
+          ? groups.map((g) => jsx(HiveAgentGroup, {
+              key: g.profile, profile: g.profile, messages: g.messages,
+              expanded: !!expanded[g.profile],
+              unseen: hiveGroupUnseen(timeline, g.profile, seen[g.profile]),
+              onToggle: () => toggle(g.profile)
+            }))
+          : [jsx('div', { key: 'empty', className: 'p-6 text-center text-xs text-muted-foreground', children: 'No activity yet. Message @default or add agents to start the crew.' })]
+      })
+    }),
+    !follow.pinned && jsx(Button, {
+      size: 'sm', variant: 'outline',
+      onClick: follow.jump,
+      className: 'absolute bottom-3 right-3 z-10 shadow',
+      children: '↓ latest'
+    })
+  ] })
 }
 
-/** Flat chronological feed (the original view). */
+/** Flat chronological feed — turn entries render as inline activity spines. */
 function HiveTimeline() {
   const timeline = useValue($hiveTimeline)
   const ref = useRef(null)
-  useEffect(() => {
-    const el = ref.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [timeline.length])
-  return jsx(ScrollArea, {
-    ref,
-    className: 'h-full grow min-h-0',
-    children: jsx('div', {
-      className: 'flex flex-col gap-1 p-2',
-      'data-hive-timeline': true,
-      children: [
-        ...(timeline.length
-          ? timeline.map((m) => jsx(HiveMemberTone, { key: m.id, from: m.from, to: m.to, text: m.text, ts: m.ts }))
-          : [jsx('div', { key: 'empty', className: 'p-6 text-center text-xs text-muted-foreground', children: 'No activity yet. Message @default or add agents to start the crew.' })]),
-        jsx(HiveLiveRow, { key: 'live' })
-      ]
+  const follow = useFollowScroll(ref, timeline)
+  return jsx('div', { className: 'relative h-full grow min-h-0', children: [
+    jsx(ScrollArea, {
+      ref, className: 'h-full grow min-h-0', onScroll: follow.onScroll,
+      children: jsx('div', {
+        className: 'flex flex-col gap-1 p-2',
+        'data-hive-timeline': true,
+        children: timeline.length
+          ? timeline.map((m) => m.kind === 'turn' ? jsx(HiveTurnRow, { key: m.id, turn: m }) : jsx(HiveMemberTone, { key: m.id, m }))
+          : [jsx('div', { key: 'empty', className: 'p-6 text-center text-xs text-muted-foreground', children: 'No activity yet. Message @default or add agents to start the crew.' })]
+      })
+    }),
+    !follow.pinned && jsx(Button, {
+      size: 'sm', variant: 'outline',
+      onClick: follow.jump,
+      className: 'absolute bottom-3 right-3 z-10 shadow',
+      children: '↓ latest'
     })
-  })
+  ] })
 }
 
 /** Slim toggle between the flat feed and grouped-by-agent expandable view. */
@@ -1077,11 +1391,20 @@ function TimelineBody() {
   return mode === 'agents' ? jsx(HiveGroupedTimeline, {}) : jsx(HiveTimeline, {})
 }
 
+/** Coordination grammar shortcuts — the bracket syntax agents actually speak
+ *  (SPEC B8 discoverability). Clicking inserts the template into the composer. */
+const HIVE_GRAMMAR_HINTS = Object.freeze([
+  { id: 'to', label: '[to @name]', tpl: '[to @name]' },
+  { id: 'ask', label: '[ask @name]', tpl: '[ask @name]' },
+  { id: 'all', label: '[all]', tpl: '[all]' }
+])
+
 function HiveComposer() {
   const composer = useValue($hiveComposer)
   const members = useValue($hiveMembers)
   const open = useValue($hiveMentionOpen)
   const ref = useRef(null)
+  const [active, setActive] = useState(0)
   const q = open.toLowerCase()
   const matches = useMemo(() => {
     if (!open) return []
@@ -1093,21 +1416,22 @@ function HiveComposer() {
     haptic('tap')
     $hiveComposer.set('')
     $hiveMentionOpen.set('')
+    setActive(0)
     const parsed = hiveRouteUserPost(text, members)
     if (parsed.relays.length) {
       for (const r of parsed.relays) {
         const target = members.find((m) => hiveNormalize(m.profile) === r.target)
         if (target) {
           hiveAppendTimeline({ from: 'you', kind: 'relay', text: r.text, to: r.target })
-          hiveMarkStatus(target.sessionId, 'streaming')
-          hiveStreamReset(target.profile)
+          // Honest queue state: busy targets show a clock, not a fake pulse.
+          const busy = target.status === 'streaming' || target.status === 'thinking' || target.status === 'tool'
+          if (busy) hiveMarkStatus(target.sessionId, 'queued')
           void hiveDeliverTo(target, r.text, { from: 'you' })
         }
       }
     } else {
       const targets = members.filter((m) => !(m.muted && parsed.broadcast))
       hiveAppendTimeline({ from: 'you', kind: 'user', text: parsed.broadcast, to: null })
-      for (const m of targets) { hiveMarkStatus(m.sessionId, 'streaming'); hiveStreamReset(m.profile) }
       void hiveDeliverToAll(parsed.broadcast, { from: 'you' })
     }
     hivePersist()
@@ -1117,30 +1441,69 @@ function HiveComposer() {
     $hiveComposer.set(v)
     const toks = v.split(/\s+/)
     $hiveMentionOpen.set((toks[toks.length - 1] || '').startsWith('@') ? toks[toks.length - 1].slice(1) : '')
+    setActive(0)
+  }
+
+  const pickMention = (name) => {
+    const toks = $hiveComposer.get().split(/\s+/)
+    toks[toks.length - 1] = name + ' '
+    $hiveComposer.set(toks.join(' ')); $hiveMentionOpen.set(''); setActive(0); ref.current?.focus?.()
+  }
+
+  const insertTemplate = (tpl) => {
+    const cur = $hiveComposer.get()
+    const sep = cur && !cur.endsWith(' ') ? ' ' : ''
+    $hiveComposer.set(cur + sep + tpl + ' ')
+    setActive(0); ref.current?.focus?.()
+  }
+
+  const onKeyDown = (ev) => {
+    if (open && matches.length > 0) {
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); setActive((a) => (a + 1) % matches.length); return }
+      if (ev.key === 'ArrowUp') { ev.preventDefault(); setActive((a) => (a - 1 + matches.length) % matches.length); return }
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); pickMention(matches[active] || matches[0]); return }
+      if (ev.key === 'Escape') { ev.preventDefault(); $hiveMentionOpen.set(''); return }
+    }
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(composer) }
   }
 
   return jsxs('div', {
-    className: 'border-t p-2 flex flex-col gap-1.5',
+    className: 'relative border-t p-2 flex flex-col gap-1.5',
     'data-hive-composer': true,
     children: [
-      open && matches.length > 0 && jsx('div', { className: 'flex flex-wrap gap-1 pb-1', children: matches.map((name) =>
-        jsx(Button, {
-          key: name, variant: 'outline', size: 'sm', onClick: () => {
-            const toks = $hiveComposer.get().split(/\s+/)
-            toks[toks.length - 1] = name + ' '
-            $hiveComposer.set(toks.join(' ')); $hiveMentionOpen.set(''); ref.current?.focus?.()
-          }, children: name
-        })
-      ) }),
+      open && matches.length > 0 && jsx('div', {
+        className: 'absolute bottom-full left-2 right-2 z-20 max-h-48 overflow-y-auto rounded-md border bg-background p-1 shadow-lg',
+        'data-hive-mentions': true,
+        children: matches.map((name, i) => jsx(Button, {
+          key: name,
+          variant: i === active ? 'default' : 'ghost',
+          size: 'sm',
+          className: 'w-full justify-start text-xs',
+          onMouseEnter: () => setActive(i),
+          onClick: () => pickMention(name),
+          children: name
+        }))
+      }),
+      // grammar hint chips — insert the bracket syntax agents understand
+      jsx('div', { className: 'flex flex-wrap items-center gap-1', children: [
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Route:' }),
+        ...HIVE_GRAMMAR_HINTS.map((h) => jsx(Button, {
+          key: h.id, variant: 'ghost', size: 'sm',
+          className: 'h-5 px-1.5 text-[10px]',
+          title: `Insert ${h.label} — agents read this as a directed message`,
+          onClick: () => insertTemplate(h.tpl),
+          children: h.label
+        }))
+      ] }),
       jsx(Textarea, {
         ref, value: composer, rows: 2, className: 'resize-none text-sm',
-        placeholder: 'Direct a member with @name, or broadcast to the room…',
+        placeholder: '@name to direct · [all] to broadcast · or just talk to the room…',
         'data-testid': 'hive-composer',
         onChange: (ev) => onChange(ev.target.value),
-        onKeyDown: (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(composer) } }
+        onKeyDown: onKeyDown
       }),
       jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
-        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Enter ↵ send · Shift+↵ newline · @ to tag' }),
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Enter ↵ send · Shift+↵ newline · @ tag · ↑↓ pick' }),
         jsx(Button, { onClick: () => send(composer), disabled: !composer.trim(), size: 'sm', children: jsxs('span', { children: ['Send ', jsx(icons.Send, { size: 12, className: 'inline' })] }) })
       ] })
     ]
@@ -1170,7 +1533,7 @@ function HiveResetButton() {
           jsx(Button, { size: 'sm', variant: 'destructive', onClick: () => { setConfirming(false); void hiveResetRoom() }, children: 'Reset room' })
         ] })
       ] }) }),
-    jsx(Button, { variant: 'ghost', size: 'sm', title: 'Reset room', 'aria-label': 'Reset room', onClick: () => setConfirming((c) => !c), children: jsx(icons.Trash2, { size: 14 }) })
+    jsx(Button, { variant: 'ghost', size: 'sm', title: 'Reset room', 'aria-label': 'Reset room', onClick: () => setConfirming((c) => !c), children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.Trash2, { size: 14 }), 'Reset'] }) })
   ] })
 }
 
@@ -1178,7 +1541,7 @@ function HiveRoomMenu() {
   const swarm = useValue($hiveSwarm)
   return jsx(DropdownMenu, {
     children: [
-      jsx(DropdownMenuTrigger, { asChild: true, children: jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Room menu', children: jsx(icons.SlidersHorizontal, { size: 14 }) }) }),
+      jsx(DropdownMenuTrigger, { asChild: true, children: jsx(Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Room settings', children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.SlidersHorizontal, { size: 14 }), 'Room settings'] }) }) }),
       jsx(DropdownMenuContent, {
         align: 'end',
         children: [
@@ -1325,7 +1688,7 @@ function HiveSoulEditor({ profile }) {
       jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => $hiveView.set('timeline'), children: 'Back' })
     ] }),
     hint &&
-      jsx('div', { className: 'rounded-md border p-1.5 text-muted-foreground', style: { ...HIVE_T.xs, borderColor: 'rgba(128,128,128,0.3)', background: 'rgba(128,128,128,0.08)' }, children: '✓ Scratchpad pointer is in this SOUL.' }),
+      jsx('div', { className: 'rounded-md border bg-muted/40 p-1.5 text-muted-foreground', style: HIVE_T.xs, children: '✓ Scratchpad pointer is in this SOUL.' }),
     loaded
       ? jsx(Textarea, {
           value: draft,
@@ -1344,51 +1707,63 @@ function HiveSoulEditor({ profile }) {
 
 
 
-function HivePane() {
+function HivePage() {
   const members = useValue($hiveMembers)
   const title = useValue($hiveTitle)
   const view = useValue($hiveView)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(title)
+  const busyCount = members.filter((m) => ['queued', 'thinking', 'tool', 'streaming'].includes(m.status)).length
   const commitTitle = () => { if (titleDraft.trim()) { $hiveTitle.set(titleDraft.trim().slice(0, 40)); hivePersist() } setEditingTitle(false) }
   const soulProfile = view.startsWith('soul:') ? view.slice(5) : null
-  return jsxs('div', {
-    'data-hive-pane': true,
-    className: 'flex h-full flex-col bg-background',
-    style: { minHeight: 0 },
+  return jsxs('main', {
+    'data-hive-page': true,
+    className: 'flex h-full min-h-0 min-w-0 flex-col',
     children: [
-      jsxs('div', { className: 'flex items-center justify-between gap-2 border-b px-3 py-2', children: [
-        jsxs('div', { className: 'flex min-w-0 items-center gap-2', children: [
-          jsx('span', { className: 'text-sm font-semibold', children: 'Hive' }),
-          editingTitle
-            ? jsx(Input, { autoFocus: true, value: titleDraft, className: 'h-6 w-24 text-xs', onChange: (e) => setTitleDraft(e.target.value), onBlur: commitTitle, onKeyDown: (ev) => { if (ev.key === 'Enter') commitTitle() } })
-            : jsx(Badge, { variant: 'secondary', className: 'cursor-pointer', onClick: () => { setTitleDraft(title); setEditingTitle(true) }, title: 'Rename room', children: title }),
-          jsx(Badge, { variant: 'outline', children: members.length + 1 + '/11' })
+      jsxs('header', { className: 'flex flex-wrap items-center justify-between gap-3 border-b px-6 py-4', children: [
+        jsxs('div', { className: 'min-w-0', children: [
+          jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+            jsx('h1', { className: 'text-lg font-semibold', children: 'Hive' }),
+            editingTitle
+              ? jsx(Input, { autoFocus: true, value: titleDraft, className: 'h-7 w-40 text-sm', onChange: (e) => setTitleDraft(e.target.value), onBlur: commitTitle, onKeyDown: (ev) => { if (ev.key === 'Enter') commitTitle() } })
+              : jsx(Badge, { variant: 'secondary', className: 'cursor-pointer', onClick: () => { setTitleDraft(title); setEditingTitle(true) }, title: 'Rename room', children: title }),
+            jsx(Badge, { variant: busyCount > 0 ? 'default' : 'outline', children: busyCount > 0 ? `${busyCount} active` : 'ready' })
+          ] }),
+          jsx('p', { className: 'mt-1 max-w-3xl text-sm text-muted-foreground', style: HIVE_T.wrap, children: 'Live agent room — coordinate work, inspect tool activity, and act on any member.' })
         ] }),
-        jsxs('div', { className: 'flex items-center gap-1', children: [
-          jsx(Button, { variant: view === 'scratch' ? 'default' : 'ghost', size: 'sm', onClick: () => $hiveView.set(view === 'scratch' ? 'timeline' : 'scratch'), title: 'Shared team scratchpad', children: '📝' }),
+        jsxs('div', { className: 'flex flex-wrap items-center gap-1.5', children: [
+          jsx(Button, { variant: view === 'scratch' ? 'default' : 'ghost', size: 'sm', onClick: () => $hiveView.set(view === 'scratch' ? 'timeline' : 'scratch'), title: 'Shared team scratchpad', children: jsxs('span', { className: 'flex items-center gap-1.5', children: ['📝', 'Scratchpad'] }) }),
           jsx(HiveAddMember, {}),
           jsx(HiveResetButton, {}),
           jsx(HiveRoomMenu, {})
         ] })
       ] }),
-      jsx('div', { className: 'flex flex-col gap-1.5 border-b p-2', 'data-hive-roster': true, children: [
-        jsx('div', { className: 'flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs select-none opacity-90', 'data-role': 'you', children: [
-          jsx(StatusDot, { tone: 'good' }),
-          jsx('span', { className: 'font-semibold', children: 'you' }),
-          jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: '(always delivers)' })
+      jsxs('section', { className: 'border-b px-6 py-3', 'data-hive-roster': true, children: [
+        jsxs('div', { className: 'flex flex-wrap items-center justify-between gap-2', children: [
+          jsx('span', { className: 'text-xs font-semibold uppercase tracking-wide text-muted-foreground', children: 'Crew' }),
+          jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `${members.length + 1}/11 members · click a member for actions` })
         ] }),
-        members.map((m) => jsx(HiveRosterChip, { key: m.profile, m }))
+        jsx('div', { className: 'mt-2 flex max-h-48 flex-wrap content-start gap-1.5 overflow-auto', children: [
+          jsx('div', { className: 'flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs select-none opacity-90', 'data-role': 'you', children: [
+            jsx(StatusDot, { tone: 'good' }),
+            jsx('span', { className: 'font-semibold', children: 'you' }),
+            jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: '(always delivers)' })
+          ] }),
+          members.map((m) => jsx(HiveRosterChip, { key: m.profile, m }))
+        ] })
       ] }),
-      soulProfile
-        ? jsx(HiveSoulEditor, { key: soulProfile, profile: soulProfile })
-        : view === 'scratch'
-          ? jsx(HiveScratchEditor, {})
-          : jsxs('div', { className: 'flex min-h-0 grow flex-col', children: [
-              jsx(HiveTimelineModeToggle, {}),
-              jsx(TimelineBody, {}),
-              jsx(HiveComposer, {})
-            ] })
+      jsx('div', { className: 'border-b px-6 py-2 text-xs text-muted-foreground', style: HIVE_T.wrap, children: 'Route directly with @name · use [ask @name] for a focused request · use [all] to broadcast to the room.' }),
+      jsx('div', { className: 'flex min-h-0 grow flex-col' , children:
+        soulProfile
+          ? jsx(HiveSoulEditor, { key: soulProfile, profile: soulProfile })
+          : view === 'scratch'
+            ? jsx(HiveScratchEditor, {})
+            : jsxs('div', { className: 'flex min-h-0 grow flex-col', children: [
+                jsx(HiveTimelineModeToggle, {}),
+                jsx(TimelineBody, {}),
+                jsx(HiveComposer, {})
+              ] })
+      })
     ]
   })
 }
@@ -1407,30 +1782,23 @@ export default {
     void hiveBootHydrate()
 
     const disposers = []
-    // A single always-registered `pane`. `collapseTab: true` opts into the
-    // pane-shell's NATIVE collapse-tool-panel behaviour (terminal/logs style):
-    // the header+chevron is kept even as a lone pane, and minimize collapses
-    // to the standard slim vertical rail with a clickable tab to restore.
-    // Two states only: fully expanded, or collapsed to the native rail.
-    let paneDisposer = null
-    const registerPane = (enabled) => {
-      if (paneDisposer) { paneDisposer() }
-      paneDisposer = ctx.register({
-        id: 'pane', area: 'panes', title: 'hive', enabled,
-        data: { placement: 'right', width: '380px', minWidth: '300px', maxWidth: '560px', collapseTab: true },
-        render: () => jsx(HivePane, {})
-      })
-    }
-    // Always present; collapse/expand is the pane-shell's native zone toggle.
-    registerPane(true)
-    hiveSetCollapsed = (c) => { registerPane(true) }
+    hiveOpenPage = () => host.navigate(HIVE_ROUTE)
 
     disposers.push(ctx.register({
-      id: 'palette-open', area: 'palette',
+      id: 'page', area: ROUTES_AREA, title: 'Hive',
+      data: { path: HIVE_ROUTE },
+      render: () => jsx(HivePage, {})
+    }))
+    disposers.push(ctx.register({
+      id: 'nav', area: SIDEBAR_NAV_AREA, order: 45,
+      data: { codicon: 'comment-discussion', label: 'Hive', path: HIVE_ROUTE }
+    }))
+    disposers.push(ctx.register({
+      id: 'palette-open', area: PALETTE_AREA,
       data: {
         id: 'buzz-hive-open', label: 'Hive: open the agent room',
-        keywords: ['hive', 'buzz', 'room', 'agents', 'multi'],
-        run: () => { hiveSetCollapsed(false); hivePersist(); host.notify({ kind: 'success', message: 'Hive room opened.' }) }
+        keywords: ['hive', 'buzz', 'room', 'agents', 'multi', 'coordinate'],
+        run: () => { hiveOpenPage(); hivePersist(); host.notify({ kind: 'success', message: 'Hive room opened.' }) }
       }
     }))
 
@@ -1438,35 +1806,66 @@ export default {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
       console.log(`[buzz-hive] turn start @${m.profile} session=${e.session_id}`)
-      hiveStreamReset(m.profile)
-      hiveMarkStatus(e.session_id, 'streaming')
+      hiveOpenTurn(m)
     }))
     disposers.push(host.onEvent('message.delta', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
-      hiveStreamAppend(m.profile, (e.payload && e.payload.text) || '')
-      const key = hiveNormalize(m.profile)
-      const s = $hiveStreams.get()[key] || { text: '', tool: '' }
-      $hiveGroupLive.set({ ...$hiveGroupLive.get(), [key]: { text: s.text, tool: s.tool } })
+      hiveAppendTurnText(m, (e.payload && e.payload.text) || '')
       hiveMarkStatus(e.session_id, 'streaming')
     }))
-    disposers.push(host.onEvent('thinking.delta', (e) => hiveMarkStatus(e.session_id, 'streaming')))
-    disposers.push(host.onEvent('reasoning.delta', (e) => hiveMarkStatus(e.session_id, 'streaming')))
+    disposers.push(host.onEvent('thinking.delta', (e) => {
+      const m = hiveMemberBySession(e.session_id, e.profile)
+      if (!m) return
+      hivePatchOpenTurn(m, { phase: 'thinking' })
+      hiveMarkStatus(e.session_id, 'thinking')
+    }))
+    disposers.push(host.onEvent('reasoning.delta', (e) => {
+      const m = hiveMemberBySession(e.session_id, e.profile)
+      if (!m) return
+      hivePatchOpenTurn(m, { phase: 'thinking' })
+      hiveMarkStatus(e.session_id, 'thinking')
+    }))
     disposers.push(host.onEvent('tool.start', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
-      hiveMarkStatus(e.session_id, 'streaming')
-      hiveStreamSetTool(m.profile, (e.payload && (e.payload.tool || e.payload.name)) || '')
+      hiveTurnToolStart(m, (e.payload && (e.payload.tool || e.payload.name)) || 'tool')
     }))
+    disposers.push(host.onEvent('tool.completed', (e) => {
+      const m = hiveMemberBySession(e.session_id, e.profile)
+      if (!m) return
+      hiveTurnToolDone(m, (e.payload && (e.payload.tool || e.payload.name)) || '', !e.error)
+    }))
+    // Defensive tool.error — silently no-op if this gateway never emits it.
+    try {
+      disposers.push(host.onEvent('tool.error', (e) => {
+        const m = hiveMemberBySession(e.session_id, e.profile)
+        if (!m) return
+        hiveTurnToolDone(m, (e.payload && (e.payload.tool || e.payload.name)) || '', false)
+      }))
+    } catch { /* event type not offered — fine */ }
+    // Honest failure surfacing: any per-session error marks the turn failed.
+    try {
+      disposers.push(host.onEvent('error', (e) => {
+        const m = hiveMemberBySession(e.session_id, e.profile)
+        if (!m) return
+        hiveTurnFail(m, (e.error && e.error.message) || (e.payload && e.payload.error) || 'turn failed')
+      }))
+    } catch { /* event type not offered — fine */ }
     disposers.push(host.onEvent('message.complete', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
-      const buffered = $hiveStreams.get()[hiveNormalize(m.profile)]?.text || ''
+      // The spine itself holds the streamed text now (single source).
+      const open = hiveLastOpenTurn($hiveTimeline.get(), m.profile)
+      const buffered = open ? String(open.text || '') : ''
       console.log(`[buzz-hive] turn complete @${m.profile} chars=${buffered.length}`)
       void hiveHandleAssistantDone(e, buffered)
     }))
     disposers.push(host.onEvent('assistant.completed', hiveHandleFallbackCompleted))
 
-    ctx.onDispose(() => disposers.forEach((d) => { try { d() } catch { /* noop */ } }))
+    ctx.onDispose(() => {
+      hiveOpenPage = null
+      disposers.forEach((d) => { try { d() } catch { /* noop */ } })
+    })
   }
 }

@@ -18,7 +18,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 
 // HIVE_DIGEST_LEN is defined above the markers; inject it for the sliced scope.
 const factory = new Function(
-  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveGroupTimeline, hiveToggleAgentExpanded }`
+  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen }`
 )
 const {
   hiveParseCoordination,
@@ -35,7 +35,19 @@ const {
   hiveResolveModelEntry,
   hiveModelAssignmentBody,
   hiveGroupTimeline,
-  hiveToggleAgentExpanded
+  hiveToggleAgentExpanded,
+  HIVE_TURN_OPEN,
+  hiveTurnInit,
+  hiveTurnPatch,
+  hiveTurnAddTool,
+  hiveTurnFinishTool,
+  hiveTurnAppendText,
+  hiveTurnFold,
+  hiveTurnError,
+  hiveTurnDigestBody,
+  hiveLastOpenTurn,
+  hiveActivityPreview,
+  hiveGroupUnseen
 } = factory()
 
 let pass = 0
@@ -53,6 +65,15 @@ function deep(name, actual, expected) {
   const a = JSON.stringify(actual)
   const e = JSON.stringify(expected)
   assert(name, a === e, { actual: a, expected: e })
+}
+
+console.log('desktop surface contract')
+{
+  assert('Hive registers a first-class route', src.includes("area: ROUTES_AREA") && src.includes("path: HIVE_ROUTE"))
+  assert('Hive registers a native sidebar entry', src.includes("area: SIDEBAR_NAV_AREA") && src.includes("label: 'Hive'"))
+  assert('Hive keeps a command-palette opener', src.includes("area: PALETTE_AREA") && src.includes('host.navigate(HIVE_ROUTE)'))
+  assert('Hive is no longer a shared right pane', !src.includes("area: 'panes'") && !src.includes("placement: 'right'"))
+  assert('Hive wraps long prose and tokens', src.includes("overflowWrap: 'anywhere'") && src.includes('break-words'))
 }
 
 console.log('hiveParseCoordination')
@@ -235,6 +256,69 @@ console.log('hiveToggleAgentExpanded')
   deep('force true', hiveToggleAgentExpanded({}, 'frontier', true), { frontier: true })
   deep('force false', hiveToggleAgentExpanded({ frontier: true }, 'frontier', false), { frontier: false })
   deep('normalizes profile key', hiveToggleAgentExpanded({}, 'Frontier'), { frontier: true })
+}
+
+console.log('turn-entry reducer (activity spine, SPEC B1-B4)')
+{
+  const T0 = 1000000000000
+  const t = hiveTurnInit('Frontier', T0)
+  deep('init kind/phase/from normalize', [t.kind, t.phase, t.from, t.ts], ['turn', 'thinking', 'frontier', T0])
+  deep('init has empty text/tools/error', [t.text, t.tools.length, t.error, t.doneAt], ['', 0, '', 0])
+  assert('init id unique-ish', typeof t.id === 'string' && t.id.length > 0)
+
+  const withTool = hiveTurnAddTool(t, 'browser_navigate', T0)
+  deep('tool start sets phase+tool and records open tool', [withTool.phase, withTool.tool, withTool.tools.length, withTool.tools[0].status], ['tool', 'browser_navigate', 1, 'run'])
+  const dedup = hiveTurnAddTool(withTool, 'browser_navigate', T0 + 10)
+  deep('tool dedup while running keeps one record', dedup.tools.length, 1)
+
+  const fin = hiveTurnFinishTool(withTool, 'browser_navigate', T0 + 4000)
+  deep('tool finish computes duration + returns to streaming', [fin.phase, fin.tool, fin.tools[0].dur, fin.tools[0].status], ['streaming', '', 4000, 'ok'])
+  const er = hiveTurnFinishTool(withTool, 'browser_navigate', T0 + 1000, 'err')
+  deep('tool finish can mark err', er.tools[0].status, 'err')
+
+  const queued = hiveTurnPatch(t, { phase: 'queued', queuedSince: T0 })
+  const app = hiveTurnAppendText(queued, 'hello')
+  deep('text append while queued STAYS queued', app.phase, 'queued')
+  deep('text appended', app.text, 'hello')
+  const streaming = hiveTurnAppendText(hiveTurnPatch(t, { phase: 'streaming' }), 'hi ')
+  deep('text append while streaming flips to streaming', streaming.phase, 'streaming')
+
+  const folded = hiveTurnFold(withTool, 'final answer', T0 + 5000)
+  deep('fold marks done, sets text, clears tool', [folded.phase, folded.text, folded.tool, folded.doneAt], ['done', 'final answer', '', T0 + 5000])
+  deep('fold defaults to streamed text', hiveTurnFold(hiveTurnAppendText(t, 'streamed'), undefined, T0).text, 'streamed')
+
+  const bad = hiveTurnError(withTool, 'boom', T0 + 5)
+  deep('error marks phase+message', [bad.phase, bad.error, bad.tool], ['error', 'boom', ''])
+
+  deep('open phases list', HIVE_TURN_OPEN, ['queued', 'thinking', 'tool', 'streaming'])
+  deep('digest body: done text', hiveTurnDigestBody(folded).slice(0, 13), 'final answer')
+  deep('digest body: error prefix', hiveTurnDigestBody(bad).startsWith('(error)'), true)
+  deep('digest body: working', hiveTurnDigestBody(t).startsWith('(working'), true)
+  deep('digest body: working mentions tool', hiveTurnDigestBody(withTool), '(working · browser_navigate)')
+
+  const tl = [folded, hiveTurnAppendText(t, 'x'), hiveTurnPatch(hiveTurnAppendText(t, 'y'), { phase: 'streaming' }), { from: 'bob', text: 'msg' }]
+  deep('lastOpenTurn finds latest open for profile', hiveLastOpenTurn(tl, 'FRONTIER').text, 'y')
+  deep('lastOpenTurn ignores done/error', hiveLastOpenTurn([folded, bad, { from: 'frontier', kind: 'agent', text: 'z' }], 'frontier'), null)
+  deep('lastOpenTurn no match → null', hiveLastOpenTurn([], 'x'), null)
+
+  deep('activityPreview: live text clipped', hiveActivityPreview(hiveTurnAppendText(t, 'A'.repeat(120))).length, 90)
+  deep('activityPreview: tool', hiveActivityPreview(withTool), 'using browser_navigate…')
+  deep('activityPreview: error', hiveActivityPreview(bad), 'boom')
+  deep('activityPreview: empty working', hiveActivityPreview(t), 'working…')
+  deep('groupUnseen counts after ts', hiveGroupUnseen([{ from: 'frontier', ts: 100 }, { from: 'frontier', ts: 200 }, { from: 'bob', ts: 300 }], 'frontier', 150), 1)
+}
+
+console.log('hiveBuildDigest with turn entries')
+{
+  const tl = [
+    { from: 'frontier', kind: 'turn', phase: 'streaming', text: 'in progress', tool: '' },
+    { from: 'builder', kind: 'turn', phase: 'done', text: 'shipped it', tool: '' },
+    { from: 'builder', kind: 'relay', text: 'check this', to: 'frontier' }
+  ]
+  const d = hiveBuildDigest(tl, 12)
+  assert('digest shows live turn as working', d.includes('(working)'))
+  assert('digest shows done turn text', d.includes('shipped it'))
+  assert('digest keeps relay arrow', d.includes('→ @frontier'))
 }
 
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))
