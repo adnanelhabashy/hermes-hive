@@ -72,7 +72,8 @@ const HIVE_PLUGIN_ID = 'buzz-hive'
 const HIVE_ROUTE = '/hive'
 const HIVE_MAX_MEMBERS = 10 // profile members (You is extra, pinned)
 const HIVE_DIGEST_LEN = 12
-const HIVE_STORAGE_KEY = 'hive.v1'
+const HIVE_STORAGE_KEY = 'hive.v2'
+const HIVE_LEGACY_STORAGE_KEY = 'hive.v1'
 const HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const HIVE_DEFAULT_ACCENT = 'hsl(208 72% 56%)' // stable blue for `default`
 const HIVE_SCRATCH_INJECT_MAX = 4000 // chars injected into each agent turn
@@ -130,6 +131,50 @@ let hiveStorageRef = null
 // ── create-CORE-BEGIN (pure functions; sliced verbatim by test.cjs) ────────
 
 const hiveNormalize = (name) => ((name || '').trim() || 'default').toLowerCase()
+
+// Context policy is deliberately small and explicit. Standard preserves the
+// current room-aware behavior; Minimal sends only a bounded, fielded handoff.
+const HIVE_CONTEXT_MODES = Object.freeze(['standard', 'minimal'])
+
+function hiveNormalizeContextMode(mode) {
+  const value = String(mode || '').trim().toLowerCase()
+  return HIVE_CONTEXT_MODES.includes(value) ? value : 'standard'
+}
+
+function hiveBuildHandoffCapsule(member, sender, text, meta = {}) {
+  const target = hiveNormalize(member && member.profile)
+  const from = hiveNormalize(sender || 'you')
+  const status = String(meta.status || (member && member.status) || 'idle')
+  const artifact = String(meta.artifact || 'room-local relay')
+  const ask = meta.ask === true ? 'true' : 'false'
+  const acceptance = String(meta.acceptance || 'Respond with result, blocker, or next action.')
+  return (
+    `[HIVE HANDOFF]\\n` +
+    `from: @${from}\\n` +
+    `to: @${target}\\n` +
+    `status: ${status}\\n` +
+    `artifact: ${artifact}\\n` +
+    `ask: ${ask}\\n` +
+    `acceptance: ${acceptance}\\n\\n` +
+    String(text || '')
+  )
+}
+
+function hiveBuildContextEnvelope({ mode, member, sender, text, timeline, scratch, system = false, ask = false, scratchMax = 4000 } = {}) {
+  if (system) return String(text || '')
+  if (hiveNormalizeContextMode(mode) === 'minimal') {
+    return hiveBuildHandoffCapsule(member, sender, text, { ask })
+  }
+  const rawScratch = String(scratch || '')
+  const scratchSection = rawScratch
+    ? `\\n\\n[team scratchpad — shared, keep current]\\n${rawScratch.length > scratchMax ? rawScratch.slice(0, scratchMax) + '\\n…(truncated)' : rawScratch}`
+    : ''
+  return (
+    `[room digest]\\n${hiveBuildDigest(timeline, HIVE_DIGEST_LEN)}${scratchSection}\\n\\n` +
+    (sender ? `from @${sender}:\\n` : '') +
+    String(text || '')
+  )
+}
 
 /**
  * Parse a member's finished output (or a user post) into coordination actions.
@@ -627,14 +672,17 @@ async function hiveDeliverTo(member, text, opts = {}) {
     })
     return
   }
-  const scratch = $hiveScratch.get()
-  const scratchSection = scratch
-    ? `\n\n[team scratchpad — shared, keep current]\n${scratch.length > HIVE_SCRATCH_INJECT_MAX ? scratch.slice(0, HIVE_SCRATCH_INJECT_MAX) + '\n…(truncated)' : scratch}`
-    : ''
-  const payload =
-    `[room digest]\n${hiveBuildDigest($hiveTimeline.get(), HIVE_DIGEST_LEN)}${scratchSection}\n\n` +
-    (opts.from ? `from @${opts.from}:\n` : '') +
-    text
+  const payload = hiveBuildContextEnvelope({
+    mode: member.contextMode,
+    member,
+    sender: opts.from,
+    text,
+    timeline: $hiveTimeline.get(),
+    scratch: $hiveScratch.get(),
+    system: opts.system === true,
+    ask: opts.ask === true,
+    scratchMax: HIVE_SCRATCH_INJECT_MAX
+  })
   const busy = member.status === 'streaming' || member.status === 'thinking' || member.status === 'tool'
   const queued = opts.queued === true || busy
   if (queued && !opts.system) hiveMarkStatus(member.sessionId, 'queued') // honest chip: queued behind current turn
@@ -739,7 +787,7 @@ async function hiveHandleAssistantDone(e, content) {
     }
     if (!hiveGuardEcho(r.target, r.text)) continue
     hiveAppendTimeline({ from, kind: 'relay', text: r.text, to: r.target })
-    await hiveDeliverTo(target, r.text, { from })
+    await hiveDeliverTo(target, r.text, { from, ask: r.ask })
   }
 
   if (parsed.broadcast) {
@@ -918,7 +966,7 @@ async function hiveUpdateSoul(profile, content) {
 }
 
 /** Mint a live session on a profile and seed it with the room brief. */
-async function hiveMintMember(profile) {
+async function hiveMintMember(profile, options = {}) {
   const list = $hiveMembers.get()
   if (list.length >= HIVE_MAX_MEMBERS) {
     host.notify({ kind: 'warning', message: `Hive: room is full (${HIVE_MAX_MEMBERS} members).` })
@@ -931,7 +979,8 @@ async function hiveMintMember(profile) {
   const params = { cols: 96, source: 'desktop', profile: key, ...($hiveCwd.get() ? { cwd: $hiveCwd.get() } : {}) }
   try {
     const created = await host.request('session.create', params)
-    const member = { profile: key, sessionId: created.session_id, storedId: created.stored_session_id || null, status: 'idle', browser: false, muted: false }
+    const contextMode = hiveNormalizeContextMode(options.contextMode)
+    const member = { profile: key, sessionId: created.session_id, storedId: created.stored_session_id || null, status: 'idle', browser: false, muted: false, contextMode }
     $hiveMembers.set([...$hiveMembers.get(), member])
     if (!$hiveMembers.get().some((m) => m.browser)) {
       $hiveMembers.set($hiveMembers.get().map((m) => (hiveNormalize(m.profile) === key ? { ...m, browser: true } : m)))
@@ -959,10 +1008,21 @@ function hiveRemoveMember(profile) {
   hivePersist()
 }
 
+async function hiveSetContextMode(profile, mode) {
+  const key = hiveNormalize(profile)
+  const contextMode = hiveNormalizeContextMode(mode)
+  const list = $hiveMembers.get()
+  $hiveMembers.set(list.map((m) => hiveNormalize(m.profile) === key ? { ...m, contextMode } : m))
+  hivePersist()
+  host.notify({ kind: 'success', message: `@${key} context: ${contextMode}. Applies to the next delivery.` })
+}
+
 async function hiveFreshContext(profile) {
   const key = hiveNormalize(profile)
+  const prior = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === key)
+  const contextMode = hiveNormalizeContextMode(prior && prior.contextMode)
   $hiveMembers.set($hiveMembers.get().filter((m) => hiveNormalize(m.profile) !== key))
-  await hiveMintMember(key)
+  await hiveMintMember(key, { contextMode })
 }
 
 /** Set a member's model to a curated WORKING model entry, then mint a fresh
@@ -1090,14 +1150,24 @@ function hivePersist() {
     scratch: $hiveScratch.get(),
     timelineMode: $hiveTimelineMode.get(),
     agentExpanded: $hiveAgentExpanded.get(),
-    members: $hiveMembers.get().map((m) => ({ profile: m.profile, storedId: m.storedId, browser: m.browser, muted: m.muted })),
+    members: $hiveMembers.get().map((m) => ({
+      profile: m.profile,
+      storedId: m.storedId,
+      browser: m.browser,
+      muted: m.muted,
+      contextMode: hiveNormalizeContextMode(m.contextMode),
+      model: m.model || null,
+      provider: m.provider || null,
+      modelLabel: m.modelLabel || null
+    })),
     timeline: $hiveTimeline.get().slice(-120)
   })
 }
 
 async function hiveBootHydrate() {
   if (!hiveStorageRef) return
-  const saved = hiveStorageRef.get(HIVE_STORAGE_KEY, null)
+  const savedV2 = hiveStorageRef.get(HIVE_STORAGE_KEY, null)
+  const saved = savedV2 || hiveStorageRef.get(HIVE_LEGACY_STORAGE_KEY, null)
   if (!saved || !Array.isArray(saved.members) || saved.members.length === 0) {
     await hiveMintMember('default')
     hivePersist()
@@ -1112,7 +1182,18 @@ async function hiveBootHydrate() {
   if (Array.isArray(saved.timeline)) $hiveTimeline.set(saved.timeline.slice(-120))
   const hydrated = []
   for (const m of saved.members) {
-    const live = { profile: m.profile, storedId: m.storedId || null, browser: !!m.browser, muted: !!m.muted, status: 'idle', sessionId: null, model: m.model || null, provider: m.provider || null, modelLabel: m.modelLabel || null }
+    const live = {
+      profile: m.profile,
+      storedId: m.storedId || null,
+      browser: !!m.browser,
+      muted: !!m.muted,
+      contextMode: hiveNormalizeContextMode(m.contextMode),
+      status: 'idle',
+      sessionId: null,
+      model: m.model || null,
+      provider: m.provider || null,
+      modelLabel: m.modelLabel || null
+    }
     if (live.storedId) {
       try {
         const info = await host.request('session.info', { session_id: live.storedId })
@@ -1124,6 +1205,8 @@ async function hiveBootHydrate() {
     hydrated.push(live)
   }
   $hiveMembers.set(hydrated)
+  // Write the normalized v2 shape even when the source was legacy v1.
+  hivePersist()
 }
 
 // ── UI ──────────────────────────────────────────────────────────────────────
@@ -1182,6 +1265,25 @@ function HiveModelSubmenu({ m }) {
   ] }) })
 }
 
+function HiveContextModeControl({ m }) {
+  const mode = hiveNormalizeContextMode(m && m.contextMode)
+  return jsx('div', { className: 'px-1 py-1', 'data-hive-context-mode': true, children: jsxs('div', { className: 'flex flex-col gap-1', children: [
+    jsxs('div', { className: 'flex items-center justify-between gap-2 px-2', children: [
+      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Context' }),
+      jsx('span', { className: 'font-medium', style: HIVE_T.xs, children: mode === 'minimal' ? 'Minimal' : 'Standard' })
+    ] }),
+    jsx(SegmentedControl, {
+      options: [
+        { id: 'standard', label: 'Standard' },
+        { id: 'minimal', label: 'Minimal' }
+      ],
+      value: mode,
+      onChange: (next) => { void hiveSetContextMode(m.profile, next) }
+    }),
+    jsx('div', { className: 'px-2 text-muted-foreground', style: HIVE_T.xs, children: mode === 'minimal' ? 'Direct handoff only; no automatic digest or scratchpad.' : 'Room digest + shared scratchpad on direct deliveries.' })
+  ] }) })
+}
+
 function HiveRosterChip({ m }) {
   const { color, soft } = hiveAccent(m.profile)
   const sessionRef = m.storedId || m.sessionId || undefined
@@ -1224,6 +1326,7 @@ function HiveRosterChip({ m }) {
             jsx('span', { style: { color }, className: 'font-medium', children: '@' + m.profile }),
             m.browser && jsx(icons.Globe, { size: 12, style: { color } }),
             m.muted && jsx('span', { className: 'uppercase tracking-wide text-muted-foreground', style: HIVE_T.xs, children: 'muted' }),
+            jsx('span', { className: 'uppercase tracking-wide text-muted-foreground', style: HIVE_T.xs, children: hiveNormalizeContextMode(m.contextMode) === 'minimal' ? 'minimal' : 'standard' }),
             m.modelLabel && jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, title: m.modelLabel, children: m.modelLabel }),
             glyph && jsx('span', { className: cn(glyphPulse && 'animate-pulse'), style: { ...glyphTone, fontSize: 10 }, children: glyph })
           ]
@@ -1237,6 +1340,7 @@ function HiveRosterChip({ m }) {
           jsx(DropdownMenuItem, { onSelect: () => { $hiveView.set('soul:' + m.profile); haptic('tap') }, children: 'Edit SOUL / persona' }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveToggleMute(m.profile), children: m.muted ? 'Unmute' : 'Mute' }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveSetBrowser(m.profile, !m.browser), children: m.browser ? 'Release browser control' : 'Grant browser control' }),
+          jsx(HiveContextModeControl, { m }),
           jsx(HiveModelSubmenu, { m }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveFreshContext(m.profile), children: 'Fresh context (new session)' }),
           jsx(DropdownMenuSeparator, {}),
@@ -1571,7 +1675,7 @@ function HiveComposer() {
           // Honest queue state: busy targets show a clock, not a fake pulse.
           const busy = target.status === 'streaming' || target.status === 'thinking' || target.status === 'tool'
           if (busy) hiveMarkStatus(target.sessionId, 'queued')
-          void hiveDeliverTo(target, r.text, { from: 'you', queued: busy })
+          void hiveDeliverTo(target, r.text, { from: 'you', ask: r.ask, queued: busy })
         }
       }
     } else {
@@ -1705,6 +1809,7 @@ function HiveCreateForm({ onDone, onCancel }) {
   const [name, setName] = useState('')
   const [cloneFrom, setCloneFrom] = useState('default')
   const [soul, setSoul] = useState('')
+  const [contextMode, setContextMode] = useState('minimal')
   const [status, setStatus] = useState('idle')
   const [error, setError] = useState('')
   const trimmed = name.trim()
@@ -1713,13 +1818,24 @@ function HiveCreateForm({ onDone, onCancel }) {
   async function submit() {
     if (!trimmed || invalid) { setError(invalid ? 'Lowercase letters, digits, - or _ (start letter/digit).' : 'Pick a name first.'); return }
     setStatus('saving'); setError('')
-    try { await hiveCreateProfile(trimmed, cloneFrom || null, soul); setStatus('done'); onDone(trimmed) }
+    try { await hiveCreateProfile(trimmed, cloneFrom || null, soul); setStatus('done'); onDone(trimmed, contextMode) }
     catch (err) { setStatus('error'); setError(err instanceof Error ? err.message : 'Create failed.') }
   }
   return jsxs('div', { className: 'flex flex-col gap-1.5 border-t p-2', 'data-hive-create': true, children: [
     jsx('div', { className: 'text-xs font-medium', children: 'New profile' }),
     jsx(Input, { autoFocus: true, placeholder: 'profile-name', value: name, 'aria-invalid': invalid, onChange: (e) => setName(e.target.value), className: 'text-xs' }),
     jsx(Input, { placeholder: 'Clone from (default)', value: cloneFrom, onChange: (e) => setCloneFrom(e.target.value), className: 'text-xs' }),
+    jsxs('div', { className: 'flex items-center justify-between gap-2 rounded-md border px-2 py-1.5', children: [
+      jsxs('span', { className: 'flex flex-col', children: [
+        jsx('span', { className: 'text-xs', children: 'Context mode' }),
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'New clones default to Minimal.' })
+      ] }),
+      jsx(SegmentedControl, {
+        options: [{ id: 'standard', label: 'Standard' }, { id: 'minimal', label: 'Minimal' }],
+        value: contextMode,
+        onChange: (next) => setContextMode(hiveNormalizeContextMode(next))
+      })
+    ] }),
     jsx(Textarea, { placeholder: 'Optional SOUL.md / persona', value: soul, rows: 2, onChange: (e) => setSoul(e.target.value), className: 'resize-none text-xs' }),
     error && jsx('div', { className: 'text-destructive', style: HIVE_T.sm, children: error }),
     jsxs('div', { className: 'flex items-center justify-between', children: [
@@ -1776,7 +1892,7 @@ function HiveAddMember() {
         jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Close', onClick: () => { setOpen(false); setCreating(false) }, children: jsx(icons.X, { size: 13 }) })
       ] }),
       creating
-        ? jsx(HiveCreateForm, { onDone: (name) => { setCreating(false); setOpen(false); setQ(''); void hiveMintMember(name); void hiveFetchProfiles().then(setProfiles) }, onCancel: () => setCreating(false) })
+        ? jsx(HiveCreateForm, { onDone: (name, contextMode) => { setCreating(false); setOpen(false); setQ(''); void hiveMintMember(name, { contextMode }); void hiveFetchProfiles().then(setProfiles) }, onCancel: () => setCreating(false) })
         : jsxs('div', { className: 'flex flex-col gap-1.5', children: [
             jsx(Input, { autoFocus: true, placeholder: 'Search profiles…', value: q, onChange: (e) => setQ(e.target.value), className: 'mb-1 text-xs' }),
             loadState === 'error'

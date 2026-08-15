@@ -18,7 +18,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 
 // HIVE_DIGEST_LEN is defined above the markers; inject it for the sliced scope.
 const factory = new Function(
-  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen }`
+  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen }`
 )
 const {
   hiveParseCoordination,
@@ -30,6 +30,9 @@ const {
   hiveIsValidProfileName,
   hiveExtractScratchEntries,
   hiveIsMemberSession,
+  hiveNormalizeContextMode,
+  hiveBuildHandoffCapsule,
+  hiveBuildContextEnvelope,
   HIVE_WORKING_MODELS,
   hiveModelKey,
   hiveResolveModelEntry,
@@ -83,6 +86,12 @@ console.log('desktop surface contract')
   assert('Seeded turns close their activity spine', src.includes("hiveFoldTurn(member, '')"))
   assert('Direct relays preserve queue intent', src.includes("queued: busy"))
   assert('Follow-scroll binds to the Radix viewport', src.includes("data-slot=\"scroll-area-viewport\""))
+  assert('Context policy persists in hive.v2', src.includes("const HIVE_STORAGE_KEY = 'hive.v2'") && src.includes('contextMode: hiveNormalizeContextMode(m.contextMode)'))
+  assert('Legacy hive.v1 state is read for migration', src.includes("HIVE_LEGACY_STORAGE_KEY = 'hive.v1'") && src.includes('savedV2 || hiveStorageRef.get(HIVE_LEGACY_STORAGE_KEY'))
+  assert('Every member exposes the context mode control', src.includes('data-hive-context-mode') && src.includes('Standard') && src.includes('Minimal'))
+  assert('New profile form defaults to Minimal', src.includes("useState('minimal')") && src.includes('New clones default to Minimal.'))
+  assert('Delivery uses the context envelope policy', src.includes('hiveBuildContextEnvelope({') && src.includes('mode: member.contextMode'))
+  assert('Ask relays preserve the ask bit in Minimal capsules', src.includes('ask: r.ask'))
 }
 
 console.log('hiveParseCoordination')
@@ -179,6 +188,30 @@ console.log('hiveBuildRoomBrief')
   assert('non-browser brief omits browser role', !b.includes('BROWSER AGENT'))
   const bb = hiveBuildRoomBrief({ profile: 'builder' }, members, 'hive', true, [])
   assert('browser brief includes browser role', bb.includes('BROWSER AGENT') && bb.includes('browser_navigate'))
+}
+
+console.log('hive context policy envelopes')
+{
+  deep('missing context mode defaults to standard', hiveNormalizeContextMode(), 'standard')
+  deep('invalid context mode defaults to standard', hiveNormalizeContextMode('verbose'), 'standard')
+  deep('minimal context mode normalizes', hiveNormalizeContextMode('MINIMAL'), 'minimal')
+
+  const member = { profile: 'builder', status: 'idle', contextMode: 'minimal' }
+  const capsule = hiveBuildHandoffCapsule(member, 'you', 'Check the CTA', { ask: true })
+  assert('minimal capsule names sender and target', capsule.includes('from: @you') && capsule.includes('to: @builder'))
+  assert('minimal capsule carries ask and message', capsule.includes('ask: true') && capsule.endsWith('Check the CTA'))
+  assert('minimal capsule does not contain digest marker', !capsule.includes('[room digest]'))
+
+  const timeline = [{ from: 'frontier', text: 'keep this digest row' }]
+  const standard = hiveBuildContextEnvelope({ mode: 'standard', member, sender: 'you', text: 'Do standard work', timeline, scratch: '# shared facts' })
+  assert('standard envelope includes digest', standard.includes('[room digest]') && standard.includes('keep this digest row'))
+  assert('standard envelope includes scratchpad', standard.includes('[team scratchpad — shared, keep current]'))
+
+  const minimal = hiveBuildContextEnvelope({ mode: 'minimal', member, sender: 'you', text: 'Do minimal work', timeline, scratch: '# shared facts' })
+  assert('minimal envelope includes handoff capsule', minimal.includes('[HIVE HANDOFF]') && minimal.includes('Do minimal work'))
+  assert('minimal envelope omits digest and scratchpad', !minimal.includes('[room digest]') && !minimal.includes('[team scratchpad'))
+  const system = hiveBuildContextEnvelope({ mode: 'minimal', member, sender: 'system', text: 'Seed room brief', timeline, scratch: '# shared facts', system: true })
+  deep('system envelope remains the seeded brief', system, 'Seed room brief')
 }
 
 console.log('hiveNormalize + name validation')
