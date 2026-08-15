@@ -21,6 +21,17 @@ native concurrent per-profile sockets.
 - **Agents coordinate with each other** — `[to @name]`, `[ask @name]`, `[all]`.
   A rolling **room digest** is injected into every turn so each agent stays
   aware of the whole room without shared memory.
+- **Agents check each other's work** ✅ — real work items, not just prose:
+  `[task @name]` assigns, `[done #id]` submits, `[review @name #id]` requests a
+  check, `[verdict #id pass|fail]` decides. A failure routes back to the owner
+  to fix; nobody can pass their own work. Live board in the Scratchpad tab.
+- **A pinned mission** 🎯 — the room's objective ships in every member's context
+  on every turn, so it never scrolls out of the 12-entry digest.
+- **Bounded relays** — self-exclusion, a hop budget, and a fan-out cap keep the
+  room a team instead of an amplifier. Suppressions are shown, never silent.
+
+> **The protocol is fully specified in [PROTOCOL.md](PROTOCOL.md)** — what each
+> agent receives, every marker, every routing guarantee, and the honest limits.
 - **Per-member identity** — deterministic color accent per profile; every
   member is glanceable at a glance.
 - **Live feedback** — pulsing "answering…" rows stream a member's partial text
@@ -28,9 +39,10 @@ native concurrent per-profile sockets.
 - **Control deck** — stop a member mid-turn, mute a member, toggle
   agent-to-agent relays (swarm), fresh per-member context, reset the whole room,
   grant the browser role to exactly one member.
-- **Shared team scratchpad** 📝 — a markdown doc every member sees in context on
-  every turn. Record progress and shared facts; agents append via `[scratchpad]`.
-  It's the room's working memory.
+- **Shared team scratchpad** 📝 — one markdown doc every member sees in context
+  on every turn, in **both** context modes. Agents append with
+  `[scratchpad:Section]` and **correct** a wrong shared fact with
+  `[scratchpad:Section!]` rather than burying it under a contradiction.
 - **Shared fleet base** 🧰 — a curated `~/.hermes/fleet/` of ~23 universal skills
   (PDF, docx, xlsx, code-review, agentmail, …) shared **by file-symlink** across
   all profiles — full capability, zero copies. See `SPEC-SHARED-FLEET.md`.
@@ -64,6 +76,14 @@ plugins**.
 5. Room menu (sliders icon, top-right): renamable title, **swarm toggle**
    (agents talk to each other or only to you), **Reset room**.
 
+## ⚠️ Known unverified
+
+Members are minted through the **active** gateway with a `profile` param, so a
+member's session lives on whichever backend was active when it was created.
+Switching the desktop's active profile while a room is live has **not** been
+verified end-to-end; if members go quiet after a profile switch, use
+**Fresh context** on the affected chips.
+
 ## 🗺️ Roadmap
 
 - [x] Per-profile color accents
@@ -74,6 +94,9 @@ plugins**.
 - [x] Shared team scratchpad (injected + agent-appended)
 - [x] Inline SOUL editing + scratchpad pointer
 - [x] Add-agent popover close (✕ / outside-click / Escape)
+- [x] Work items + peer review (`[task]`/`[done]`/`[review]`/`[verdict]`)
+- [x] Pinned mission + roster re-broadcast on membership change
+- [x] Single routing seam with hop budget and fan-out cap
 - [ ] Room presets (named crews)
 - [ ] Per-member token/cost meter
 - [ ] Advanced markdown + message actions (copy / resend)
