@@ -78,6 +78,12 @@ const HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const HIVE_DEFAULT_ACCENT = 'hsl(208 72% 56%)' // stable blue for `default`
 const HIVE_SCRATCH_INJECT_MAX = 4000 // chars injected into each agent turn
 const HIVE_SCRATCH_STORE_MAX = 8000 // chars kept in the shared doc
+// Relay budgets. Without these an untagged reply fans out to every member and
+// each of those replies fans out again — the room becomes an amplifier instead
+// of a team. Hops bound the chain depth; fanout bounds a single turn's blast.
+const HIVE_MAX_HOPS = 3
+const HIVE_MAX_FANOUT = 6
+const HIVE_TASK_KEEP = 40 // work items retained in state
 // Inline style tokens for sizes the frozen build CSS doesn't ship (arbitrary
 // Tailwind classes like text-[10px] / size-1.5 generate ZERO rules — audit
 // against app.asar.unpacked/dist/assets/index-*.css).
@@ -100,6 +106,13 @@ const $hiveComposer = atom('')
 const $hiveMentionOpen = atom('') // autocomplete filter when composing @name
 const $hiveSwarm = atom(true) // agent-to-agent relays on/off
 const $hiveScratch = atom('') // shared team scratchpad (markdown), injected every turn
+// The room's standing objective. Pinned, never trimmed, shipped in EVERY
+// delivery: the rolling digest is only 12 entries deep, so without this the
+// original goal scrolls out of every member's view within a few turns.
+const $hiveMission = atom('')
+// Work items — the validation spine. Prose alone can't express "check my work",
+// so review is tracked as state the relay routes on.
+const $hiveTasks = atom([])
 const $hiveView = atom('timeline') // 'timeline' | 'scratch' | 'soul:<profile>'
 // Timeline presentation: 'flat' (chronological feed) | 'agents' (grouped,
 // per-agent collapsible sections). Expand/collapse is per-agent, persisted.
@@ -132,13 +145,42 @@ let hiveStorageRef = null
 
 const hiveNormalize = (name) => ((name || '').trim() || 'default').toLowerCase()
 
-// Context policy is deliberately small and explicit. Standard preserves the
-// current room-aware behavior; Minimal sends only a bounded, fielded handoff.
+// Context policy is deliberately small and explicit. Standard ships the full
+// room-aware envelope; Minimal ships a fielded handoff without the digest.
+// BOTH carry the standing header, the shared scratchpad and the member's open
+// work items — those ARE the shared memory, and a member that can't see them
+// cannot act as a teammate. "Minimal" bounds the chatter, not the awareness.
 const HIVE_CONTEXT_MODES = Object.freeze(['standard', 'minimal'])
 
 function hiveNormalizeContextMode(mode) {
   const value = String(mode || '').trim().toLowerCase()
   return HIVE_CONTEXT_MODES.includes(value) ? value : 'standard'
+}
+
+/** Clip a block, keeping the HEAD. The mission and the founding decisions live
+ *  at the top of the scratchpad, so trimming from the front is precisely
+ *  backwards — it destroys the context worth keeping. */
+function hiveClipHead(text, max) {
+  const s = String(text || '')
+  if (s.length <= max) return s
+  return s.slice(0, max) + '\n…(truncated — full doc in the room\'s Scratchpad tab)'
+}
+
+/** The standing header every member gets on every delivery, in every mode:
+ *  who they are, what the room is for, and who else is on the crew. Roster
+ *  drift is the single biggest reason members stop addressing each other, so
+ *  the roster ships every turn rather than only at join time. */
+function hiveBuildStandingHeader({ member, members, title, mission } = {}) {
+  const me = hiveNormalize(member && member.profile)
+  const roster = [...(members || []), { profile: 'you' }]
+    .map((m) => '@' + hiveNormalize(m.profile))
+    .join(', ')
+  const goal = String(mission || '').trim()
+  return (
+    `[hive] you are @${me} in room "${title || 'hive'}"\n` +
+    `roster (address ONLY these): ${roster}\n` +
+    `mission: ${goal || '(none set — ask @you to set one)'}`
+  )
 }
 
 function hiveBuildHandoffCapsule(member, sender, text, meta = {}) {
@@ -149,31 +191,73 @@ function hiveBuildHandoffCapsule(member, sender, text, meta = {}) {
   const ask = meta.ask === true ? 'true' : 'false'
   const acceptance = String(meta.acceptance || 'Respond with result, blocker, or next action.')
   return (
-    `[HIVE HANDOFF]\\n` +
-    `from: @${from}\\n` +
-    `to: @${target}\\n` +
-    `status: ${status}\\n` +
-    `artifact: ${artifact}\\n` +
-    `ask: ${ask}\\n` +
-    `acceptance: ${acceptance}\\n\\n` +
+    `[HIVE HANDOFF]\n` +
+    `from: @${from}\n` +
+    `to: @${target}\n` +
+    `status: ${status}\n` +
+    `artifact: ${artifact}\n` +
+    `ask: ${ask}\n` +
+    `acceptance: ${acceptance}\n\n` +
     String(text || '')
   )
 }
 
-function hiveBuildContextEnvelope({ mode, member, sender, text, timeline, scratch, system = false, ask = false, scratchMax = 4000 } = {}) {
-  if (system) return String(text || '')
-  if (hiveNormalizeContextMode(mode) === 'minimal') {
-    return hiveBuildHandoffCapsule(member, sender, text, { ask })
-  }
-  const rawScratch = String(scratch || '')
-  const scratchSection = rawScratch
-    ? `\\n\\n[team scratchpad — shared, keep current]\\n${rawScratch.length > scratchMax ? rawScratch.slice(0, scratchMax) + '\\n…(truncated)' : rawScratch}`
-    : ''
-  return (
-    `[room digest]\\n${hiveBuildDigest(timeline, HIVE_DIGEST_LEN)}${scratchSection}\\n\\n` +
-    (sender ? `from @${sender}:\\n` : '') +
-    String(text || '')
+/** Render the work items this member is accountable for. Only their own rows —
+ *  a full board in every envelope is noise, and noise is what stopped the
+ *  previous protocol from being followed. */
+function hiveFormatWorkItems(tasks, member) {
+  const me = hiveNormalize(member && member.profile)
+  const mine = (tasks || []).filter(
+    (t) => t && t.status !== 'passed' && (hiveNormalize(t.owner) === me || hiveNormalize(t.reviewer) === me)
   )
+  if (!mine.length) return ''
+  const rows = mine.map((t) => {
+    const role = hiveNormalize(t.reviewer) === me && hiveNormalize(t.owner) !== me ? 'reviewing' : 'own'
+    return `#${t.id} [${t.status}] ${role}: ${t.title}`
+  })
+  return `[your open work items]\n${rows.join('\n')}`
+}
+
+/**
+ * THE context seam. Every message a member receives is assembled here — one
+ * place, so what an agent knows is a property of this function rather than of
+ * whichever call site happened to reach it.
+ *
+ * Sections are joined with real newlines. (They were previously written as
+ * `\\n` inside template literals, which emits a literal backslash-n: every
+ * relay arrived as one run-on line and the "markdown scratchpad" the brief
+ * promised never materialized.)
+ */
+function hiveBuildContextEnvelope({
+  mode, member, members, title, mission, sender, text, timeline, scratch, tasks,
+  system = false, ask = false, scratchMax = 4000, since = 0
+} = {}) {
+  if (system) return String(text || '')
+
+  const minimal = hiveNormalizeContextMode(mode) === 'minimal'
+  const sections = [hiveBuildStandingHeader({ member, members, title, mission })]
+
+  if (!minimal) {
+    const recent = since ? (timeline || []).filter((m) => (m && m.ts ? m.ts : 0) > since) : timeline
+    const rows = recent && recent.length ? recent : timeline
+    sections.push(`[room digest]\n${hiveBuildDigest(rows, HIVE_DIGEST_LEN)}`)
+  }
+
+  const work = hiveFormatWorkItems(tasks, member)
+  if (work) sections.push(work)
+
+  const pad = String(scratch || '').trim()
+  if (pad) {
+    sections.push(`[team scratchpad — shared working memory, keep it current]\n${hiveClipHead(pad, scratchMax)}`)
+  }
+
+  sections.push(
+    minimal
+      ? hiveBuildHandoffCapsule(member, sender, text, { ask })
+      : (sender ? `from @${sender}:\n` : '') + String(text || '')
+  )
+
+  return sections.join('\n\n')
 }
 
 /**
@@ -242,27 +326,46 @@ function hiveBuildDigest(timeline, n = HIVE_DIGEST_LEN) {
  * The room brief seeded into a member session on mint/fresh-context/re-role.
  * `timeline` is passed in for pure/testable construction.
  */
-function hiveBuildRoomBrief(member, members, title, isBrowserAgent, timeline) {
+function hiveBuildRoomBrief(member, members, title, isBrowserAgent, timeline, opts = {}) {
   const roster = [...members, { profile: 'you' }]
     .map((m) => '@' + hiveNormalize(m.profile))
     .join(', ')
   const digest = hiveBuildDigest(timeline, HIVE_DIGEST_LEN)
+  const mission = String(opts.mission || '').trim()
+  const scratch = String(opts.scratch || '').trim()
   return (
     `You are @${hiveNormalize(member.profile)}, a member of the Hermes room "${title}".\n` +
     `Roster (use ONLY these names to address members): ${roster}.\n` +
+    `You are working with real teammates, not alone: prefer delegating what someone else owns, and ask for a second pair of eyes before you call something done.\n` +
     (isBrowserAgent
       ? `You are the room's BROWSER AGENT. When live or current information is needed, use browser_navigate / browser_snapshot / browser_click / web_extract to fetch and verify it yourself.\n`
       : '') +
-    `\nCOORDINATION RULES (follow exactly):\n` +
+    `\nMISSION (what this room is for):\n${mission || '(none set yet — ask @you for the objective before doing speculative work)'}\n` +
+    `\nADDRESSING TEAMMATES (follow exactly):\n` +
     `- Direct a teammate privately:  [to @name] message\n` +
     `- Ask one member a question:    [ask @name] question\n` +
     `- Address the whole room:       [all] message\n` +
     `- No marker = the message is addressed to you; answer it.\n` +
     `- Never invent teammates; use only the roster above.\n` +
-    `\nSHARED SCRATCHPAD:\n` +
-    `You have a shared team scratchpad (markdown) included in every message you receive.\n` +
-    `Use it to record progress, decisions, and shared facts the team needs. Keep it concise and current.\n` +
-    `To update it for the team, start a line with [scratchpad] followed by the markdown entry you want appended.\n` +
+    `- Keep untagged prose short. Anything you say without a marker is broadcast to the whole room, so think before you narrate.\n` +
+    `\nDIVIDING AND CHECKING WORK (this is how the room validates itself):\n` +
+    `- Hand someone a task:          [task @name] what needs doing\n` +
+    `- Report your task finished:    [done #id] what you actually did\n` +
+    `- Ask for validation:           [review @name #id] what to check\n` +
+    `- Give your verdict:            [verdict #id pass] why  /  [verdict #id fail] what is wrong\n` +
+    `Rules: never mark your OWN work passed — ask a teammate to review it. If you are asked\n` +
+    `for a verdict, actually check the work and be specific; "looks good" is not a review.\n` +
+    `A failed verdict routes back to the owner, who fixes it and resubmits with [done #id].\n` +
+    `Your open items are listed in every message you receive under "[your open work items]".\n` +
+    `\nSHARED SCRATCHPAD (the team's working memory):\n` +
+    `A shared markdown doc is included in every message you receive. Every teammate sees the\n` +
+    `same copy. Record decisions, findings, and facts the others need — not your narration.\n` +
+    `- Append a note:                [scratchpad] the note\n` +
+    `- Append under a section:       [scratchpad:Decisions] we are using Postgres\n` +
+    `- CORRECT a section (replaces): [scratchpad:Decisions!] we switched to SQLite\n` +
+    `If you find something in the scratchpad that is wrong, correct it with the ! form rather\n` +
+    `than adding a contradicting line — every teammate reads this on every turn.\n` +
+    (scratch ? `\nCURRENT SCRATCHPAD:\n${hiveClipHead(scratch, HIVE_SCRATCH_INJECT_MAX)}\n` : '') +
     `\nROOM DIGEST (latest state):\n${digest}`
   )
 }
@@ -304,16 +407,256 @@ function hiveIsValidProfileName(name) {
   return HIVE_PROFILE_NAME_RE.test((name || '').trim())
 }
 
-/** Extract `[scratchpad] …` blocks from an agent's finished output. */
-function hiveExtractScratchEntries(content) {
-  const out = []
-  const re = /\[scratchpad\]\s*([\s\S]*?)(?=\[scratchpad\]|$)/g
+// Any marker that terminates a free-text block. Used to stop a `[scratchpad]`
+// body from swallowing the coordination markers that follow it.
+const HIVE_NEXT_MARKER = /\[(?:scratchpad|task|done|review|verdict|to|ask|all|@)[\s\]:]/i
+
+/**
+ * Parse scratchpad operations out of a member's output.
+ *   [scratchpad] text            → append under "Notes"
+ *   [scratchpad:Decisions] text  → append under that section
+ *   [scratchpad:Decisions!] text → REPLACE that section
+ *
+ * The `!` form is the point: an append-only pad means a wrong shared fact can
+ * never be corrected, only buried — and it gets re-injected into every agent
+ * on every turn forever.
+ */
+function hiveParseScratchOps(content) {
+  const text = String(content || '')
+  const hits = []
+  const re = /\[scratchpad(?::([^\]]+))?\]/gi
   let m
-  while ((m = re.exec(content || '')) !== null) {
-    const t = m[1].trim()
-    if (t) out.push(t)
+  while ((m = re.exec(text)) !== null) {
+    hits.push({ at: m.index, len: m[0].length, sec: (m[1] || '').trim() })
   }
+  const ops = []
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i]
+    const stop = i + 1 < hits.length ? hits[i + 1].at : text.length
+    let body = text.slice(h.at + h.len, stop)
+    const cut = body.search(HIVE_NEXT_MARKER)
+    if (cut !== -1) body = body.slice(0, cut)
+    const replace = h.sec.endsWith('!')
+    const section = (replace ? h.sec.slice(0, -1) : h.sec).trim() || 'Notes'
+    const trimmed = body.trim()
+    if (trimmed) ops.push({ section, body: trimmed, replace })
+  }
+  return ops
+}
+
+/** Back-compat surface: the bodies of every scratchpad op, in order. */
+function hiveExtractScratchEntries(content) {
+  return hiveParseScratchOps(content).map((op) => op.body)
+}
+
+/** Split a scratchpad doc into ordered `## heading` sections. */
+function hiveScratchSections(doc) {
+  const text = String(doc || '')
+  const out = []
+  const re = /^##\s+(.+)$/gm
+  let m
+  let open = null
+  while ((m = re.exec(text)) !== null) {
+    if (open) out.push({ name: open.name, body: text.slice(open.from, m.index).trim() })
+    open = { name: m[1].trim(), from: m.index + m[0].length }
+  }
+  if (open) out.push({ name: open.name, body: text.slice(open.from).trim() })
   return out
+}
+
+function hiveScratchRender(sections) {
+  return (sections || [])
+    .filter((s) => s && s.body)
+    .map((s) => `## ${s.name}\n${s.body}`)
+    .join('\n\n')
+}
+
+/** Apply one parsed op to the doc. Pure — the caller owns persistence. */
+function hiveScratchApply(doc, op, author, stamp) {
+  const entry = String((op && op.body) || '').trim()
+  if (!entry) return String(doc || '')
+  const name = String((op && op.section) || 'Notes').trim() || 'Notes'
+  const line = `- ${entry}${author ? `  _(@${hiveNormalize(author)}${stamp ? ' · ' + stamp : ''})_` : ''}`
+  const sections = hiveScratchSections(doc)
+  const i = sections.findIndex((s) => s.name.toLowerCase() === name.toLowerCase())
+  if (i === -1) sections.push({ name, body: line })
+  else if (op.replace) sections[i] = { name, body: line }
+  else sections[i] = { name, body: sections[i].body ? sections[i].body + '\n' + line : line }
+  return hiveScratchRender(sections)
+}
+
+// ── work items: the validation spine ───────────────────────────────────────
+// A room where members only trade prose cannot check each other's work: there
+// is no way to say "here is the thing, confirm it" and no way to know whether
+// anyone did. A work item is the smallest structure that makes review real —
+// an owner, a reviewer, and a verdict the relay can route on.
+
+/** Short, collision-tolerant work id. Injectable so tests stay deterministic. */
+function hiveMakeTaskId() {
+  return Math.random().toString(36).slice(2, 6)
+}
+
+/**
+ * Work-item grammar, parsed from any member (or user) output:
+ *   [task @name] description   → create and assign
+ *   [done #id] summary         → owner submits the result
+ *   [review @name #id] note    → ask a teammate to validate
+ *   [verdict #id pass] reason  → reviewer accepts
+ *   [verdict #id fail] reason  → reviewer rejects; routes back to the owner
+ */
+function hiveParseWorkItems(content) {
+  const text = String(content || '')
+  const out = { tasks: [], dones: [], reviews: [], verdicts: [] }
+  const scan = (re, fn) => {
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(text)) !== null) fn(m)
+  }
+  scan(/\[task\s+@?([a-z0-9._-]+)\]\s*([^\[\n]*)/gi, (m) =>
+    out.tasks.push({ target: m[1].toLowerCase(), title: m[2].trim() }))
+  scan(/\[done\s+#?([a-z0-9]+)\]\s*([^\[\n]*)/gi, (m) =>
+    out.dones.push({ id: m[1].toLowerCase(), text: m[2].trim() }))
+  scan(/\[review\s+@?([a-z0-9._-]+)\s+#?([a-z0-9]+)\]\s*([^\[\n]*)/gi, (m) =>
+    out.reviews.push({ target: m[1].toLowerCase(), id: m[2].toLowerCase(), text: m[3].trim() }))
+  scan(/\[verdict\s+#?([a-z0-9]+)\s+(pass|fail)\]\s*([^\[\n]*)/gi, (m) =>
+    out.verdicts.push({ id: m[1].toLowerCase(), ok: m[2].toLowerCase() === 'pass', text: m[3].trim() }))
+  return out
+}
+
+/** Strip every coordination marker from text destined for the timeline, so the
+ *  room reads as prose and markers are never re-relayed as content. */
+function hiveScrubMarkers(content) {
+  let text = String(content || '')
+  for (const op of hiveParseScratchOps(text)) {
+    text = text.replace(op.body, '')
+  }
+  return text
+    .replace(/\[scratchpad(?::[^\]]*)?\]/gi, '')
+    .replace(/\[(?:task\s+@?[a-z0-9._-]+|done\s+#?[a-z0-9]+|review\s+@?[a-z0-9._-]+\s+#?[a-z0-9]+|verdict\s+#?[a-z0-9]+\s+(?:pass|fail))\]/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/**
+ * Fold a turn's work-item markers into the task list, and emit the deliveries
+ * the room owes as a result. Pure: `mkId` is injected so tests are
+ * deterministic and the caller owns all persistence.
+ */
+function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
+  const next = (tasks || []).slice()
+  const routes = []
+  const now = ts || 0
+  const author = hiveNormalize(from)
+  const newId = mkId || hiveMakeTaskId
+  const find = (id) => next.findIndex((t) => t && t.id === id)
+
+  for (const t of (parsed && parsed.tasks) || []) {
+    const id = newId()
+    const owner = hiveNormalize(t.target)
+    next.push({ id, title: t.title || '(untitled)', from: author, owner, reviewer: '', status: 'open', artifact: '', ts: now })
+    routes.push({
+      target: owner,
+      kind: 'task',
+      text: `[work #${id}] You own this task: ${t.title}\nWhen it is finished reply with: [done #${id}] <what you did>`
+    })
+  }
+
+  for (const d of (parsed && parsed.dones) || []) {
+    const i = find(d.id)
+    if (i === -1) continue
+    next[i] = { ...next[i], status: 'submitted', artifact: d.text, ts: now }
+    const reviewer = hiveNormalize(next[i].reviewer)
+    const requester = hiveNormalize(next[i].from)
+    if (reviewer && reviewer !== author) {
+      routes.push({
+        target: reviewer,
+        kind: 'review',
+        text: `[work #${d.id}] @${author} submitted "${next[i].title}". Validate it, then reply [verdict #${d.id} pass] or [verdict #${d.id} fail] <reason>.\n\nSubmitted result:\n${d.text}`
+      })
+    } else if (requester && requester !== author) {
+      routes.push({ target: requester, kind: 'report', text: `[work #${d.id}] @${author} finished "${next[i].title}":\n${d.text}` })
+    }
+  }
+
+  for (const r of (parsed && parsed.reviews) || []) {
+    const i = find(r.id)
+    if (i === -1) continue
+    const reviewer = hiveNormalize(r.target)
+    next[i] = { ...next[i], reviewer, ts: now }
+    routes.push({
+      target: reviewer,
+      kind: 'review',
+      text:
+        `[work #${r.id}] Please validate "${next[i].title}"${r.text ? ' — ' + r.text : ''}. ` +
+        `Reply [verdict #${r.id} pass] or [verdict #${r.id} fail] <reason>.` +
+        (next[i].artifact ? `\n\nWork to check:\n${next[i].artifact}` : '')
+    })
+  }
+
+  for (const v of (parsed && parsed.verdicts) || []) {
+    const i = find(v.id)
+    if (i === -1) continue
+    next[i] = { ...next[i], status: v.ok ? 'passed' : 'failed', ts: now }
+    const owner = hiveNormalize(next[i].owner)
+    if (owner && owner !== author) {
+      routes.push({
+        target: owner,
+        kind: 'verdict',
+        text: v.ok
+          ? `[work #${v.id}] @${author} PASSED your work on "${next[i].title}".${v.text ? ' ' + v.text : ''}`
+          : `[work #${v.id}] @${author} FAILED your work on "${next[i].title}". Fix it and resubmit with [done #${v.id}].\nReason: ${v.text || '(none given)'}`
+      })
+    }
+  }
+
+  return { tasks: next.slice(-HIVE_TASK_KEEP), routes }
+}
+
+/**
+ * THE routing seam. Every delivery the room makes is planned here.
+ *
+ * Previously each guard lived at a different call site, so each was enforced
+ * on a different subset of paths: broadcasts skipped the swarm gate entirely,
+ * skipped the echo guard, and were fanned to EVERY member including the sender
+ * — so one untagged reply re-entered the room N+1 times and each of those did
+ * it again. Concentrating the decision here means a guard added once holds
+ * everywhere, and the whole policy is testable without a socket.
+ */
+function hivePlanDeliveries({
+  from, parsed, work, members, swarm, hops = 0,
+  maxHops = HIVE_MAX_HOPS, maxFanout = HIVE_MAX_FANOUT
+} = {}) {
+  const author = hiveNormalize(from)
+  const roster = members || []
+  const fromUser = author === 'you'
+  const deliveries = []
+  const dropped = []
+
+  const push = (target, text, kind, ask) => {
+    const key = hiveNormalize(target)
+    const body = String(text || '').trim()
+    if (!body) return
+    if (key === author) return dropped.push({ target: key, reason: 'self' })
+    const m = roster.find((x) => hiveNormalize(x.profile) === key)
+    if (!m) return dropped.push({ target: key, reason: 'not-in-room' })
+    if (m.muted && !fromUser) return dropped.push({ target: key, reason: 'muted' })
+    if (!fromUser && !swarm) return dropped.push({ target: key, reason: 'swarm-off' })
+    if (!fromUser && hops >= maxHops) return dropped.push({ target: key, reason: 'hop-budget' })
+    deliveries.push({ target: key, text: body, kind, ask: ask === true, hops: hops + 1 })
+  }
+
+  for (const r of (parsed && parsed.relays) || []) push(r.target, r.text, 'relay', r.ask)
+  for (const w of (work && work.routes) || []) push(w.target, w.text, w.kind, false)
+
+  const broadcast = String((parsed && parsed.broadcast) || '').trim()
+  if (broadcast) for (const m of roster) push(m.profile, broadcast, 'broadcast', false)
+
+  if (deliveries.length > maxFanout) {
+    for (const d of deliveries.slice(maxFanout)) dropped.push({ target: d.target, reason: 'fanout-cap' })
+    return { deliveries: deliveries.slice(0, maxFanout), dropped }
+  }
+  return { deliveries, dropped }
 }
 
 /** Pure strict-match predicate: does a member own this session? NEVER match on
@@ -664,6 +1007,11 @@ function hiveMemberBySession(sessionId) {
   return list.find((m) => hiveIsMemberSession(m, sessionId))
 }
 
+// How deep into an agent→agent chain each live session currently sits. Read
+// when that session finishes a turn, so a relay it triggers inherits the depth
+// and the hop budget can actually bite.
+const _hiveHops = new Map()
+
 async function hiveDeliverTo(member, text, opts = {}) {
   if (!member || !member.sessionId) {
     host.notify({
@@ -675,14 +1023,19 @@ async function hiveDeliverTo(member, text, opts = {}) {
   const payload = hiveBuildContextEnvelope({
     mode: member.contextMode,
     member,
+    members: $hiveMembers.get(),
+    title: $hiveTitle.get(),
+    mission: $hiveMission.get(),
     sender: opts.from,
     text,
     timeline: $hiveTimeline.get(),
     scratch: $hiveScratch.get(),
+    tasks: $hiveTasks.get(),
     system: opts.system === true,
     ask: opts.ask === true,
     scratchMax: HIVE_SCRATCH_INJECT_MAX
   })
+  _hiveHops.set(member.sessionId, opts.system === true ? 0 : Number(opts.hops) || 0)
   const busy = member.status === 'streaming' || member.status === 'thinking' || member.status === 'tool'
   const queued = opts.queued === true || busy
   if (queued && !opts.system) hiveMarkStatus(member.sessionId, 'queued') // honest chip: queued behind current turn
@@ -697,20 +1050,22 @@ async function hiveDeliverTo(member, text, opts = {}) {
   }
 }
 
-async function hiveDeliverToAll(text, opts) {
-  for (const m of $hiveMembers.get()) {
-    if (m.muted && opts.from !== 'you') continue // broadcasts skip muted (you always reaches them)
-    await hiveDeliverTo(m, text, opts)
+/** Execute a plan from hivePlanDeliveries: timeline first (so the room reads in
+ *  causal order), then the injections. Suppressions are surfaced, never silent. */
+async function hiveRunPlan(plan, from) {
+  for (const d of plan.deliveries) {
+    const target = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === d.target)
+    if (!target) continue
+    if (d.kind !== 'broadcast') {
+      hiveAppendTimeline({ from, kind: 'relay', text: d.text, to: d.target })
+    }
+    await hiveDeliverTo(target, d.text, { from, ask: d.ask, hops: d.hops })
   }
-}
-
-// last-relay echo guard: prevent A→B→A verbatim loops.
-const _hiveLastRelay = new Map()
-function hiveGuardEcho(target, text) {
-  const key = hiveNormalize(target)
-  if (_hiveLastRelay.get(key) === text) return false
-  _hiveLastRelay.set(key, text)
-  return true
+  const held = plan.dropped.filter((d) => d.reason === 'hop-budget' || d.reason === 'fanout-cap')
+  if (held.length) {
+    const why = held[0].reason === 'hop-budget' ? 'relay chain reached its depth limit' : 'fan-out limit reached'
+    hiveAppendTimeline({ from: 'system', kind: 'system', text: `⛔ held ${held.length} relay(s) from @${from} — ${why}`, to: null })
+  }
 }
 
 function hiveAppendTimeline(msg) {

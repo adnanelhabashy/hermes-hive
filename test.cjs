@@ -205,11 +205,11 @@ console.log('hive context policy envelopes')
   const timeline = [{ from: 'frontier', text: 'keep this digest row' }]
   const standard = hiveBuildContextEnvelope({ mode: 'standard', member, sender: 'you', text: 'Do standard work', timeline, scratch: '# shared facts' })
   assert('standard envelope includes digest', standard.includes('[room digest]') && standard.includes('keep this digest row'))
-  assert('standard envelope includes scratchpad', standard.includes('[team scratchpad — shared, keep current]'))
+  assert('standard envelope includes scratchpad', standard.includes('[team scratchpad — shared working memory, keep it current]'))
 
   const minimal = hiveBuildContextEnvelope({ mode: 'minimal', member, sender: 'you', text: 'Do minimal work', timeline, scratch: '# shared facts' })
   assert('minimal envelope includes handoff capsule', minimal.includes('[HIVE HANDOFF]') && minimal.includes('Do minimal work'))
-  assert('minimal envelope omits digest and scratchpad', !minimal.includes('[room digest]') && !minimal.includes('[team scratchpad'))
+  assert('minimal envelope omits digest, keeps scratchpad', !minimal.includes('[room digest]') && minimal.includes('[team scratchpad'))
   const system = hiveBuildContextEnvelope({ mode: 'minimal', member, sender: 'system', text: 'Seed room brief', timeline, scratch: '# shared facts', system: true })
   deep('system envelope remains the seeded brief', system, 'Seed room brief')
 }
