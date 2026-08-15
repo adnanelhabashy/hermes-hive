@@ -16,9 +16,11 @@ if (start === -1 || end === -1) {
 }
 const core = src.slice(src.indexOf('\n', start) + 1, end)
 
-// HIVE_DIGEST_LEN is defined above the markers; inject it for the sliced scope.
+// The slice is self-contained: every constant the pure core reads is declared
+// inside the CORE markers, so nothing here re-declares (and silently drifts
+// from) a real plugin value.
 const factory = new Function(
-  `const HIVE_DIGEST_LEN = 12;\nconst HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;\n${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen }`
+  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead }`
 )
 const {
   hiveParseCoordination,
@@ -55,7 +57,17 @@ const {
   hiveTurnDigestBody,
   hiveLastOpenTurn,
   hiveActivityPreview,
-  hiveGroupUnseen
+  hiveGroupUnseen,
+  hivePlanDeliveries,
+  hiveParseWorkItems,
+  hiveApplyWorkItems,
+  hiveParseScratchOps,
+  hiveScratchApply,
+  hiveScratchSections,
+  hiveScrubMarkers,
+  hiveBuildStandingHeader,
+  hiveFormatWorkItems,
+  hiveClipHead
 } = factory()
 
 let pass = 0
@@ -84,14 +96,16 @@ console.log('desktop surface contract')
   assert('Hive wraps long prose and tokens', src.includes("overflowWrap: 'anywhere'") && src.includes('break-words'))
   assert('Hive listens to the canonical tool completion event', src.includes("host.onEvent('tool.complete'") && !src.includes("host.onEvent('tool.completed'"))
   assert('Seeded turns close their activity spine', src.includes("hiveFoldTurn(member, '')"))
-  assert('Direct relays preserve queue intent', src.includes("queued: busy"))
+  // Queue intent + the ask bit used to be asserted by grepping this file for
+  // `queued: busy` / `ask: r.ask`. That pins the implementation's spelling
+  // rather than its behavior, and it broke the moment the routing moved behind
+  // hivePlanDeliveries. Both are now covered behaviorally further down.
   assert('Follow-scroll binds to the Radix viewport', src.includes("data-slot=\"scroll-area-viewport\""))
   assert('Context policy persists in hive.v2', src.includes("const HIVE_STORAGE_KEY = 'hive.v2'") && src.includes('contextMode: hiveNormalizeContextMode(m.contextMode)'))
   assert('Legacy hive.v1 state is read for migration', src.includes("HIVE_LEGACY_STORAGE_KEY = 'hive.v1'") && src.includes('savedV2 || hiveStorageRef.get(HIVE_LEGACY_STORAGE_KEY'))
   assert('Every member exposes the context mode control', src.includes('data-hive-context-mode') && src.includes('Standard') && src.includes('Minimal'))
   assert('New profile form defaults to Minimal', src.includes("useState('minimal')") && src.includes('New clones default to Minimal.'))
   assert('Delivery uses the context envelope policy', src.includes('hiveBuildContextEnvelope({') && src.includes('mode: member.contextMode'))
-  assert('Ask relays preserve the ask bit in Minimal capsules', src.includes('ask: r.ask'))
 }
 
 console.log('hiveParseCoordination')
@@ -400,6 +414,173 @@ console.log('hiveBuildDigest with turn entries')
   assert('digest shows live turn as working', d.includes('(working)'))
   assert('digest shows done turn text', d.includes('shipped it'))
   assert('digest keeps relay arrow', d.includes('→ @frontier'))
+}
+
+// ── structure, not substrings ──────────────────────────────────────────────
+// The envelope shipped for months with its newlines written as `\\n` inside
+// template literals — a literal backslash-n. Every assertion above passed
+// because they all ask `.includes('[marker]')`, and a marker is still present
+// in a mangled one-line blob. These assert the SHAPE of what an agent reads.
+console.log('envelope structure (regression: literal \\n)')
+{
+  const member = { profile: 'builder', contextMode: 'standard' }
+  const members = [{ profile: 'builder' }, { profile: 'frontier' }]
+  const env = hiveBuildContextEnvelope({
+    mode: 'standard', member, members, title: 'hive', mission: 'ship the audit',
+    sender: 'frontier', text: 'please review', timeline: [{ from: 'you', text: 'kick off' }],
+    scratch: '## Decisions\n- use Postgres'
+  })
+  assert('envelope contains real newlines', env.split('\n').length > 6)
+  assert('envelope contains NO literal backslash-n', !env.includes('\\n'))
+  assert('envelope pins the mission', env.includes('mission: ship the audit'))
+  assert('envelope ships the roster every turn', env.includes('@builder') && env.includes('@frontier') && env.includes('@you'))
+  assert('scratchpad body survives as its own line', env.split('\n').includes('- use Postgres'))
+  assert('sender attribution is its own line', env.split('\n').includes('from @frontier:'))
+
+  const capsule = hiveBuildHandoffCapsule({ profile: 'builder' }, 'you', 'do it', { ask: true })
+  assert('capsule is fielded across lines', capsule.split('\n').length >= 7)
+  assert('capsule has NO literal backslash-n', !capsule.includes('\\n'))
+
+  const mini = hiveBuildContextEnvelope({
+    mode: 'minimal', member: { profile: 'builder' }, members, title: 'hive',
+    mission: 'ship the audit', sender: 'you', text: 'do it', scratch: '- shared fact'
+  })
+  assert('minimal still carries mission + roster', mini.includes('ship the audit') && mini.includes('@frontier'))
+  assert('minimal still carries the scratchpad', mini.includes('- shared fact'))
+  assert('minimal omits the digest', !mini.includes('[room digest]'))
+
+  assert('clip keeps the HEAD of the doc', hiveClipHead('MISSION-FIRST then filler', 12).startsWith('MISSION-FIRS'))
+}
+
+console.log('hivePlanDeliveries (the routing seam)')
+{
+  const members = [{ profile: 'builder' }, { profile: 'frontier' }, { profile: 'quiet', muted: true }]
+  const bare = { relays: [], broadcast: 'done, found three issues' }
+
+  const self = hivePlanDeliveries({ from: 'builder', parsed: bare, members, swarm: true })
+  assert('a broadcast never returns to its sender', !self.deliveries.some((d) => d.target === 'builder'))
+  assert('sender exclusion is reported, not silent', self.dropped.some((d) => d.target === 'builder' && d.reason === 'self'))
+  assert('a broadcast still reaches the other members', self.deliveries.some((d) => d.target === 'frontier'))
+  assert('muted members are skipped for agent traffic', !self.deliveries.some((d) => d.target === 'quiet'))
+
+  const off = hivePlanDeliveries({ from: 'builder', parsed: bare, members, swarm: false })
+  deep('swarm off stops agent broadcasts too, not just relays', off.deliveries, [])
+
+  const user = hivePlanDeliveries({ from: 'you', parsed: bare, members, swarm: false })
+  assert('the user is never gated by the swarm toggle', user.deliveries.length > 0)
+  assert('the user still reaches muted members', user.deliveries.some((d) => d.target === 'quiet'))
+
+  const deep3 = hivePlanDeliveries({ from: 'builder', parsed: bare, members, swarm: true, hops: 3 })
+  deep('hop budget stops a runaway chain', deep3.deliveries, [])
+  assert('hop exhaustion is reported', deep3.dropped.some((d) => d.reason === 'hop-budget'))
+
+  const hop = hivePlanDeliveries({ from: 'builder', parsed: bare, members, swarm: true, hops: 0 })
+  assert('deliveries carry an incremented hop count', hop.deliveries.every((d) => d.hops === 1))
+
+  const many = Array.from({ length: 9 }, (_, i) => ({ profile: 'm' + i }))
+  const capped = hivePlanDeliveries({ from: 'you', parsed: bare, members: many, swarm: true, maxFanout: 4 })
+  deep('fan-out is capped', capped.deliveries.length, 4)
+  assert('the capped remainder is reported', capped.dropped.some((d) => d.reason === 'fanout-cap'))
+
+  const ask = hivePlanDeliveries({
+    from: 'you', members, swarm: true,
+    parsed: { relays: [{ target: 'builder', text: 'check the CTA', ask: true }], broadcast: '' }
+  })
+  deep('the ask bit survives routing', ask.deliveries[0].ask, true)
+  assert('unknown targets are dropped with a reason', hivePlanDeliveries({
+    from: 'you', members, swarm: true,
+    parsed: { relays: [{ target: 'ghost', text: 'hi' }], broadcast: '' }
+  }).dropped.some((d) => d.reason === 'not-in-room'))
+}
+
+console.log('work items (the validation spine)')
+{
+  const p = hiveParseWorkItems('[task @builder] audit the payment flow')
+  deep('task marker parses', p.tasks, [{ target: 'builder', title: 'audit the payment flow' }])
+
+  let ids = 0
+  const mkId = () => 'id' + ++ids
+  const a = hiveApplyWorkItems([], { from: 'you', parsed: p, ts: 1, mkId })
+  deep('task is assigned to its owner', a.tasks[0].owner, 'builder')
+  deep('a new task is open', a.tasks[0].status, 'open')
+  assert('the owner is told how to report done', a.routes[0].target === 'builder' && a.routes[0].text.includes('[done #id1]'))
+
+  const r = hiveApplyWorkItems(a.tasks, { from: 'you', parsed: hiveParseWorkItems('[review @frontier #id1] check the maths'), ts: 2, mkId })
+  deep('reviewer is recorded', r.tasks[0].reviewer, 'frontier')
+  assert('the reviewer is told how to vote', r.routes[0].target === 'frontier' && r.routes[0].text.includes('[verdict #id1 pass]'))
+
+  const d = hiveApplyWorkItems(r.tasks, { from: 'builder', parsed: hiveParseWorkItems('[done #id1] fixed the rounding'), ts: 3, mkId })
+  deep('submitting moves the item to submitted', d.tasks[0].status, 'submitted')
+  assert('submission routes to the reviewer, not the owner', d.routes[0].target === 'frontier')
+  assert('the reviewer receives the actual work', d.routes[0].text.includes('fixed the rounding'))
+
+  const v = hiveApplyWorkItems(d.tasks, { from: 'frontier', parsed: hiveParseWorkItems('[verdict #id1 fail] off by one'), ts: 4, mkId })
+  deep('a failed verdict marks the item failed', v.tasks[0].status, 'failed')
+  assert('a failure routes back to the owner to redo', v.routes[0].target === 'builder' && v.routes[0].text.includes('off by one'))
+
+  const ok = hiveApplyWorkItems(d.tasks, { from: 'frontier', parsed: hiveParseWorkItems('[verdict #id1 pass] maths check out'), ts: 5, mkId })
+  deep('a passing verdict marks the item passed', ok.tasks[0].status, 'passed')
+
+  // Regression: an unreviewed submission read hiveNormalize('') -> 'default'
+  // and was routed to whichever member is literally named `default`.
+  const unassigned = hiveApplyWorkItems(
+    [{ id: 'u1', title: 't', from: 'you', owner: 'builder', reviewer: '', status: 'open', artifact: '' }],
+    { from: 'builder', parsed: hiveParseWorkItems('[done #u1] shipped'), ts: 7, mkId }
+  )
+  assert('an empty reviewer never resolves to @default', !unassigned.routes.some((r) => r.target === 'default'))
+  deep('an unreviewed submission reports back to the requester', unassigned.routes.map((r) => r.target), ['you'])
+
+  const solo = hiveApplyWorkItems(
+    [{ id: 'x1', title: 't', from: 'builder', owner: 'builder', reviewer: '', status: 'submitted', artifact: '' }],
+    { from: 'builder', parsed: hiveParseWorkItems('[verdict #x1 pass] looks good to me'), ts: 6, mkId }
+  )
+  deep('self-verdicts route nowhere (no self-approval loop)', solo.routes, [])
+
+  assert('open items are surfaced to their owner', hiveFormatWorkItems(a.tasks, { profile: 'builder' }).includes('#id1'))
+  deep('passed items stop nagging', hiveFormatWorkItems(ok.tasks, { profile: 'builder' }), '')
+  deep('uninvolved members see no board', hiveFormatWorkItems(a.tasks, { profile: 'frontier' }), '')
+}
+
+console.log('scratchpad sections + corrections')
+{
+  deep('plain scratchpad op lands in Notes', hiveParseScratchOps('[scratchpad] a fact')[0].section, 'Notes')
+  deep('sectioned op keeps its section', hiveParseScratchOps('[scratchpad:Decisions] use pg')[0].section, 'Decisions')
+  deep('bang form marks a replacement', hiveParseScratchOps('[scratchpad:Decisions!] use sqlite')[0].replace, true)
+  assert('a scratchpad body stops at the next marker',
+    !hiveParseScratchOps('[scratchpad] a fact [to @builder] go')[0].body.includes('@builder'))
+
+  const one = hiveScratchApply('', { section: 'Decisions', body: 'use pg' }, 'builder', '10:00')
+  assert('applying creates the section', one.includes('## Decisions') && one.includes('use pg'))
+  assert('entries are attributed', one.includes('@builder'))
+
+  const two = hiveScratchApply(one, { section: 'Decisions', body: 'add an index' }, 'frontier', '10:01')
+  deep('appending keeps both facts', hiveScratchSections(two)[0].body.split('\n').length, 2)
+
+  const fixed = hiveScratchApply(two, { section: 'Decisions', body: 'use sqlite', replace: true }, 'frontier', '10:02')
+  assert('the bang form CORRECTS rather than accumulates', fixed.includes('use sqlite') && !fixed.includes('use pg'))
+  deep('a correction leaves one line standing', hiveScratchSections(fixed)[0].body.split('\n').length, 1)
+
+  const multi = hiveScratchApply(fixed, { section: 'Risks', body: 'cold start' }, 'builder', '10:03')
+  deep('separate sections coexist', hiveScratchSections(multi).length, 2)
+}
+
+console.log('hiveScrubMarkers')
+{
+  const out = hiveScrubMarkers('Here is the result. [scratchpad] noted [task @builder] do it [verdict #a1 pass] fine')
+  assert('prose survives scrubbing', out.includes('Here is the result.'))
+  assert('markers are removed from the timeline text', !out.includes('[task') && !out.includes('[scratchpad') && !out.includes('[verdict'))
+  deep('a marker-free reply is untouched', hiveScrubMarkers('just a normal reply'), 'just a normal reply')
+
+  // Regression: only the bracket was stripped, so the task TITLE survived as
+  // prose and got broadcast to the whole room on top of being assigned.
+  deep('a pure task assignment leaves no prose to broadcast',
+    hiveScrubMarkers('[task @builder] audit the payment flow'), '')
+  deep('a pure verdict leaves no prose to broadcast',
+    hiveScrubMarkers('[verdict #a1 fail] off-by-one on line 42'), '')
+  assert('the submission summary is not re-broadcast',
+    !hiveScrubMarkers('[done #a1] fixed the rounding error').includes('rounding'))
+  deep('genuine prose alongside a marker still survives',
+    hiveScrubMarkers('Handing this over.\n[task @builder] audit the flow'), 'Handing this over.')
 }
 
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))

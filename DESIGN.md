@@ -1,5 +1,11 @@
 # Buzz-Hive — Hermes-native agent room (spec)
 
+> **Superseded in part.** §2's coordination protocol, §4's brief, and §5's
+> message flow were rebuilt in the Aug 2026 inter-agent-comms overhaul.
+> **[PROTOCOL.md](PROTOCOL.md) is now authoritative** for what agents receive,
+> how messages route, and how the crew validates its own work. §9 records what
+> was wrong and why. The grounding in §1 and the SDK surface in §6 still hold.
+
 A Buzz-like collaboration room that runs **inside the Hermes desktop app** as a
 plugin pane. Up to 10 Hermes agent profiles share one room, plus the user and
 the default agent. Everyone can @-tag anyone; the plugin is the relay.
@@ -335,3 +341,70 @@ useValue — all present).
 
 ### Not testable without vision
 Pane rendered appearance; toast appearance; @-autocomplete popover position.
+
+---
+
+## 10. Inter-agent comms overhaul (Aug 15, 2026)
+
+The room was not behaving like a team. Root causes found, all reproduced
+against the plugin's own functions before any change was made.
+
+### Defects
+
+1. **Every relayed message arrived structurally destroyed.** The context
+   envelope wrote its newlines as `\\n` inside template literals — a literal
+   backslash-n. Measured on the real function: **0 real newlines, 7 literal
+   `\n`**. The room brief (which used correct `\n`) read fine, so the failure
+   looked like agents "ignoring" the scratchpad rather than never receiving it
+   as a document. Test suite was blind to it: 8 assertions covered the envelope,
+   all `.includes('[marker]')` substring checks, which pass on a mangled blob.
+
+2. **Full-mesh broadcast storm with self-delivery.** `hiveDeliverToAll` had no
+   sender exclusion; the swarm toggle gated only relays, never broadcasts; the
+   echo guard covered only relays; there was no hop or fan-out limit anywhere
+   (`grep -c "depth\|hop\|budget"` → 0). Any untagged reply — most replies —
+   re-entered the room N+1 times, and each of those did it again.
+
+3. **The roster was frozen at join time.** The brief was delivered only to the
+   joining member, while instructing everyone to "never invent teammates". A
+   member added later was unreachable by everyone already in the room.
+
+4. **New profiles defaulted to Minimal, which stripped the scratchpad.** The
+   inline "New profile…" form defaulted to a mode that sent neither digest nor
+   scratchpad — so the on-the-fly team constructor produced members with no
+   shared context at all.
+
+5. **No vocabulary for validation.** `[to]`/`[ask]`/`[all]`/`[scratchpad]` had
+   no notion of a task, an artifact, or a verdict.
+
+6. **Working memory decayed.** No pinned mission; the 12-entry digest was the
+   only shared state. The scratchpad was append-only (wrong facts could never be
+   corrected, only buried) and clipped from the **head**, destroying the goal
+   first.
+
+7. Two bugs the rebuild's own simulation then exposed: `hiveNormalize('')`
+   returns `'default'`, so an unassigned reviewer routed submissions to whoever
+   was named `default`; and marker scrubbing removed only the bracket, so every
+   task title was broadcast to the room on top of being assigned.
+
+### Shape of the fix
+
+The guards were not re-scattered across call sites — that was the original
+defect. Two seams now own the behavior, both pure and inside the CORE markers:
+
+- **`hivePlanDeliveries`** — the single routing decision. Self-exclusion, mute,
+  swarm gating, hop budget, fan-out cap, roster validation. Returns
+  `{ deliveries, dropped }`; suppressions surface in the timeline.
+- **`hiveBuildContextEnvelope`** — the single context assembly. Standing header
+  (identity + roster + mission), digest, work items, scratchpad, message.
+
+Plus `hiveApplyWorkItems` (validation spine) and `hiveScratchApply`
+(section-addressed edits with a replace form).
+
+Tuning constants moved **inside** the CORE markers so the harness no longer
+re-declares them and cannot drift from the real values.
+
+Tests: 134 → 193, with the substring assertions replaced by structural ones
+(`env.split('\n').length > 6`, `!env.includes('\\n')`) and the two
+source-text assertions — the pattern `AGENTS.md` bans — replaced by behavioral
+planner tests.

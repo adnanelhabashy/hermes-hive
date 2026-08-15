@@ -71,19 +71,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 const HIVE_PLUGIN_ID = 'buzz-hive'
 const HIVE_ROUTE = '/hive'
 const HIVE_MAX_MEMBERS = 10 // profile members (You is extra, pinned)
-const HIVE_DIGEST_LEN = 12
 const HIVE_STORAGE_KEY = 'hive.v2'
 const HIVE_LEGACY_STORAGE_KEY = 'hive.v1'
-const HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const HIVE_DEFAULT_ACCENT = 'hsl(208 72% 56%)' // stable blue for `default`
-const HIVE_SCRATCH_INJECT_MAX = 4000 // chars injected into each agent turn
-const HIVE_SCRATCH_STORE_MAX = 8000 // chars kept in the shared doc
-// Relay budgets. Without these an untagged reply fans out to every member and
-// each of those replies fans out again — the room becomes an amplifier instead
-// of a team. Hops bound the chain depth; fanout bounds a single turn's blast.
-const HIVE_MAX_HOPS = 3
-const HIVE_MAX_FANOUT = 6
-const HIVE_TASK_KEEP = 40 // work items retained in state
+// NOTE: the tuning constants the pure core depends on live INSIDE the
+// CORE-BEGIN/CORE-END markers, so the slice test.cjs evaluates is
+// self-contained. They used to sit here and be re-declared by the harness,
+// which meant the tests could silently drift from the real values.
 // Inline style tokens for sizes the frozen build CSS doesn't ship (arbitrary
 // Tailwind classes like text-[10px] / size-1.5 generate ZERO rules — audit
 // against app.asar.unpacked/dist/assets/index-*.css).
@@ -143,7 +137,24 @@ let hiveStorageRef = null
 
 // ── create-CORE-BEGIN (pure functions; sliced verbatim by test.cjs) ────────
 
+const HIVE_DIGEST_LEN = 12
+const HIVE_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const HIVE_SCRATCH_INJECT_MAX = 4000 // chars injected into each agent turn
+const HIVE_SCRATCH_STORE_MAX = 8000 // chars kept in the shared doc
+// Relay budgets. Without these an untagged reply fans out to every member and
+// each of those replies fans out again — the room becomes an amplifier instead
+// of a team. Hops bound the chain depth; fanout bounds a single turn's blast.
+const HIVE_MAX_HOPS = 3
+const HIVE_MAX_FANOUT = 6
+const HIVE_TASK_KEEP = 40 // work items retained in state
+
 const hiveNormalize = (name) => ((name || '').trim() || 'default').toLowerCase()
+
+/** Normalize a field that is legitimately allowed to be EMPTY (an unassigned
+ *  reviewer, say). hiveNormalize answers "which profile?" and falls back to
+ *  `default`, which for an optional field silently addresses whoever happens to
+ *  be named `default` — an unreviewed submission was being routed to them. */
+const hiveNormalizeOpt = (name) => (name || '').trim().toLowerCase()
 
 // Context policy is deliberately small and explicit. Standard ships the full
 // room-aware envelope; Minimal ships a fielded handoff without the digest.
@@ -208,11 +219,11 @@ function hiveBuildHandoffCapsule(member, sender, text, meta = {}) {
 function hiveFormatWorkItems(tasks, member) {
   const me = hiveNormalize(member && member.profile)
   const mine = (tasks || []).filter(
-    (t) => t && t.status !== 'passed' && (hiveNormalize(t.owner) === me || hiveNormalize(t.reviewer) === me)
+    (t) => t && t.status !== 'passed' && (hiveNormalizeOpt(t.owner) === me || hiveNormalizeOpt(t.reviewer) === me)
   )
   if (!mine.length) return ''
   const rows = mine.map((t) => {
-    const role = hiveNormalize(t.reviewer) === me && hiveNormalize(t.owner) !== me ? 'reviewing' : 'own'
+    const role = hiveNormalizeOpt(t.reviewer) === me && hiveNormalizeOpt(t.owner) !== me ? 'reviewing' : 'own'
     return `#${t.id} [${t.status}] ${role}: ${t.title}`
   })
   return `[your open work items]\n${rows.join('\n')}`
@@ -532,7 +543,11 @@ function hiveScrubMarkers(content) {
   }
   return text
     .replace(/\[scratchpad(?::[^\]]*)?\]/gi, '')
-    .replace(/\[(?:task\s+@?[a-z0-9._-]+|done\s+#?[a-z0-9]+|review\s+@?[a-z0-9._-]+\s+#?[a-z0-9]+|verdict\s+#?[a-z0-9]+\s+(?:pass|fail))\]/gi, '')
+    // Mirror hiveParseWorkItems' own `[^\[\n]*` argument capture: the text
+    // after a work marker IS the task title / submission / verdict reason and
+    // is already routed as state. Leaving it behind re-broadcast every task
+    // title to the whole room on top of assigning it.
+    .replace(/\[(?:task\s+@?[a-z0-9._-]+|done\s+#?[a-z0-9]+|review\s+@?[a-z0-9._-]+\s+#?[a-z0-9]+|verdict\s+#?[a-z0-9]+\s+(?:pass|fail))\][^[\n]*/gi, '')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
@@ -566,8 +581,8 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
     const i = find(d.id)
     if (i === -1) continue
     next[i] = { ...next[i], status: 'submitted', artifact: d.text, ts: now }
-    const reviewer = hiveNormalize(next[i].reviewer)
-    const requester = hiveNormalize(next[i].from)
+    const reviewer = hiveNormalizeOpt(next[i].reviewer)
+    const requester = hiveNormalizeOpt(next[i].from)
     if (reviewer && reviewer !== author) {
       routes.push({
         target: reviewer,
@@ -598,7 +613,7 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
     const i = find(v.id)
     if (i === -1) continue
     next[i] = { ...next[i], status: v.ok ? 'passed' : 'failed', ts: now }
-    const owner = hiveNormalize(next[i].owner)
+    const owner = hiveNormalizeOpt(next[i].owner)
     if (owner && owner !== author) {
       routes.push({
         target: owner,
@@ -634,9 +649,9 @@ function hivePlanDeliveries({
   const dropped = []
 
   const push = (target, text, kind, ask) => {
-    const key = hiveNormalize(target)
+    const key = hiveNormalizeOpt(target)
     const body = String(text || '').trim()
-    if (!body) return
+    if (!key || !body) return
     if (key === author) return dropped.push({ target: key, reason: 'self' })
     const m = roster.find((x) => hiveNormalize(x.profile) === key)
     if (!m) return dropped.push({ target: key, reason: 'not-in-room' })
@@ -1073,19 +1088,25 @@ function hiveAppendTimeline(msg) {
   $hiveTimeline.set([...t, { id: Math.random().toString(36).slice(2, 9), ts: Date.now(), ...msg }].slice(-200))
 }
 
-/** Append a dated agent entry to the shared scratchpad (agents can't wipe it). */
-function hiveAppendScratch(profile, entry) {
-  const entryText = (entry || '').trim()
-  if (!entryText) return
+/** Apply parsed scratchpad ops to the shared doc. Section-addressed, so a
+ *  teammate can CORRECT a wrong shared fact instead of burying it under a
+ *  contradicting line that every member then reads forever. */
+function hiveApplyScratchOps(profile, ops) {
+  const list = (ops || []).filter((op) => op && op.body)
+  if (!list.length) return
   const stamp = hiveTime(Date.now())
-  const block = `\n\n## @${hiveNormalize(profile)} · ${stamp}\n${entryText}`
-  const base = $hiveScratch.get()
-  let next = base.trim() ? base + block : `# Hive scratchpad\n\n## @${hiveNormalize(profile)} · ${stamp}\n${entryText}`
-  if (next.length > HIVE_SCRATCH_STORE_MAX) {
-    next = '…(older entries trimmed)\n' + next.slice(next.length - HIVE_SCRATCH_STORE_MAX)
+  let doc = $hiveScratch.get()
+  for (const op of list) doc = hiveScratchApply(doc, op, profile, stamp)
+  // Clip from the TAIL: the mission and founding decisions sit at the head of
+  // the doc, so trimming the front (the old behavior) destroyed exactly the
+  // context worth keeping.
+  if (doc.length > HIVE_SCRATCH_STORE_MAX) {
+    doc = doc.slice(0, HIVE_SCRATCH_STORE_MAX) + '\n\n…(newer entries trimmed — scratchpad is full)'
   }
-  $hiveScratch.set(next)
-  hiveAppendTimeline({ from: 'system', kind: 'system', text: `📝 @${profile} updated the shared scratchpad`, to: null })
+  $hiveScratch.set(doc)
+  const where = [...new Set(list.map((op) => op.section))].join(', ')
+  const verb = list.some((op) => op.replace) ? 'corrected' : 'updated'
+  hiveAppendTimeline({ from: 'system', kind: 'system', text: `📝 @${profile} ${verb} the scratchpad (${where})`, to: null })
   hivePersist()
 }
 
@@ -1116,38 +1137,38 @@ async function hiveHandleAssistantDone(e, content) {
     return
   }
 
-  const entries = hiveExtractScratchEntries(finalText)
-  // Strip scratchpad blocks so they don't clutter the timeline or get re-relayed.
-  const scrubbed = finalText.replace(/\[scratchpad\]\s*[\s\S]*?(?=\[scratchpad\]|$)/g, '').trim()
-
-  const parsed = hiveParseCoordination(scrubbed, $hiveMembers.get().map((m) => m.profile))
   const from = hiveNormalize(member.profile)
-  const swarm = $hiveSwarm.get()
-  for (const en of entries) hiveAppendScratch(from, en)
 
-  // Floor: the turn entry becomes the final broadcast message.
+  // Shared memory first, so a teammate reached below already sees the update.
+  hiveApplyScratchOps(from, hiveParseScratchOps(finalText))
+
+  // Work items next: they turn "check my work" from a hope into routed state.
+  const work = hiveApplyWorkItems($hiveTasks.get(), {
+    from,
+    parsed: hiveParseWorkItems(finalText),
+    ts: Date.now()
+  })
+  if (work.tasks !== $hiveTasks.get()) $hiveTasks.set(work.tasks)
+
+  // Everything the markers claimed is now state — strip them so the timeline
+  // reads as prose and no marker is ever re-relayed as content.
+  const scrubbed = hiveScrubMarkers(finalText)
+  const parsed = hiveParseCoordination(scrubbed, $hiveMembers.get().map((m) => m.profile))
+
+  // Floor: the turn entry becomes the final message.
   // (Empty-scrub turns fold to an empty done row — rare, honest, no fabrication.)
   hiveFoldTurn(member, scrubbed || parsed.broadcast || '')
 
-  for (const r of parsed.relays) {
-    const target = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === r.target)
-    if (!target) continue
-    // Non-looping: never relay to the sender, and respect mute.
-    if (hiveNormalize(target.profile) === from) continue
-    if (target.muted) continue
-    if (!swarm) {
-      // Swarm off: log the intent, don't inject into the teammate.
-      hiveAppendTimeline({ from, kind: 'relay', text: r.text, to: r.target })
-      continue
-    }
-    if (!hiveGuardEcho(r.target, r.text)) continue
-    hiveAppendTimeline({ from, kind: 'relay', text: r.text, to: r.target })
-    await hiveDeliverTo(target, r.text, { from, ask: r.ask })
-  }
-
-  if (parsed.broadcast) {
-    await hiveDeliverToAll(parsed.broadcast, { from })
-  }
+  const plan = hivePlanDeliveries({
+    from,
+    parsed,
+    work,
+    members: $hiveMembers.get(),
+    swarm: $hiveSwarm.get(),
+    hops: _hiveHops.get(e.session_id) || 0
+  })
+  await hiveRunPlan(plan, from)
+  hivePersist()
 }
 
 async function hiveHandleFallbackCompleted(e) {
@@ -1320,6 +1341,42 @@ async function hiveUpdateSoul(profile, content) {
   return await api({ path: `/api/profiles/${encodeURIComponent(hiveNormalize(profile))}/soul`, method: 'PUT', body: { content } })
 }
 
+/** The current room brief for a member, with mission + scratchpad folded in. */
+function hiveBriefFor(member, members) {
+  return hiveBuildRoomBrief(
+    member,
+    members || $hiveMembers.get(),
+    $hiveTitle.get(),
+    !!member.browser,
+    $hiveTimeline.get(),
+    { mission: $hiveMission.get(), scratch: $hiveScratch.get() }
+  )
+}
+
+/**
+ * Tell the existing crew that the roster moved.
+ *
+ * The brief instructs every member to address ONLY the names it was given, and
+ * it used to be delivered once at join time — so a member added later was
+ * invisible to everyone already in the room, and by its own instructions
+ * nobody was allowed to talk to them. A roster is shared state; it has to be
+ * broadcast when it changes.
+ */
+async function hiveAnnounceRoster(note, exclude) {
+  const members = $hiveMembers.get()
+  const skip = hiveNormalize(exclude || '')
+  const roster = [...members, { profile: 'you' }].map((m) => '@' + hiveNormalize(m.profile)).join(', ')
+  const text =
+    `[roster update] ${note}\n` +
+    `The room is now: ${roster}.\n` +
+    `Address ONLY these names. You may hand work to any of them with [task @name] and ask any of them to check yours with [review @name #id].`
+  for (const m of members) {
+    if (hiveNormalize(m.profile) === skip || !m.sessionId) continue
+    _hiveSeeded.set(hiveNormalize(m.profile), true)
+    await hiveDeliverTo(m, text, { system: true })
+  }
+}
+
 /** Mint a live session on a profile and seed it with the room brief. */
 async function hiveMintMember(profile, options = {}) {
   const list = $hiveMembers.get()
@@ -1342,8 +1399,11 @@ async function hiveMintMember(profile, options = {}) {
     }
     const current = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === key)
     _hiveSeeded.set(key, true)
-    await hiveDeliverTo(current, hiveBuildRoomBrief(current, $hiveMembers.get(), $hiveTitle.get(), current.browser, $hiveTimeline.get()), { system: true })
+    await hiveDeliverTo(current, hiveBriefFor(current), { system: true })
     hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${key} joined the room`, to: null })
+    // Everyone already here learns the new teammate exists — otherwise the
+    // brief's "never invent teammates" rule makes them permanently unreachable.
+    await hiveAnnounceRoster(`@${key} joined the room.`, key)
     hivePersist()
     return current
   } catch (err) {
@@ -1352,7 +1412,7 @@ async function hiveMintMember(profile, options = {}) {
   }
 }
 
-function hiveRemoveMember(profile) {
+async function hiveRemoveMember(profile) {
   const key = hiveNormalize(profile)
   const remaining = $hiveMembers.get().filter((m) => hiveNormalize(m.profile) !== key)
   // Auto-reassign browser role if the holder was removed and nobody holds it.
@@ -1360,6 +1420,17 @@ function hiveRemoveMember(profile) {
     remaining[0] = { ...remaining[0], browser: true }
   }
   $hiveMembers.set(remaining)
+  hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${key} left the room`, to: null })
+  // Departures matter as much as arrivals: a member left addressing a name
+  // that no longer resolves will silently get its handoffs dropped.
+  const orphaned = $hiveTasks.get().filter(
+    (t) => t.status !== 'passed' && (hiveNormalizeOpt(t.owner) === key || hiveNormalizeOpt(t.reviewer) === key)
+  )
+  await hiveAnnounceRoster(
+    `@${key} left the room.` +
+      (orphaned.length ? ` ${orphaned.length} open work item(s) they held need a new owner: ${orphaned.map((t) => '#' + t.id).join(', ')}.` : ''),
+    key
+  )
   hivePersist()
 }
 
@@ -1444,13 +1515,13 @@ async function hiveSetBrowser(profile, on) {
   const demoted = list.find((m) => m.browser && hiveNormalize(m.profile) !== key)
   if (holder) {
     _hiveSeeded.set(hiveNormalize(holder.profile), true)
-    await hiveDeliverTo(holder, hiveBuildRoomBrief(holder, next, $hiveTitle.get(), true, $hiveTimeline.get()), { system: true })
+    await hiveDeliverTo(holder, hiveBriefFor(holder, next), { system: true })
   }
   if (demoted && !demoted.browser) {
     const fresh = next.find((m) => hiveNormalize(m.profile) === hiveNormalize(demoted.profile))
     if (fresh) {
       _hiveSeeded.set(hiveNormalize(fresh.profile), true)
-      await hiveDeliverTo(fresh, hiveBuildRoomBrief(fresh, next, $hiveTitle.get(), false, $hiveTimeline.get()), { system: true })
+      await hiveDeliverTo(fresh, hiveBriefFor(fresh, next), { system: true })
     }
   }
   hivePersist()
@@ -1479,8 +1550,10 @@ async function hiveResetRoom() {
   }
   _hiveProcessed.clear()
   _hiveSeeded.clear()
+  _hiveHops.clear()
   $hiveTimeline.set([])
   $hiveMembers.set([])
+  $hiveTasks.set([])
   $hiveGroupSeen.set({})
   $hiveSwarm.set(true)
   $hiveView.set('timeline')
@@ -1503,6 +1576,8 @@ function hivePersist() {
     cwd: $hiveCwd.get(),
     swarm: $hiveSwarm.get(),
     scratch: $hiveScratch.get(),
+    mission: $hiveMission.get(),
+    tasks: $hiveTasks.get(),
     timelineMode: $hiveTimelineMode.get(),
     agentExpanded: $hiveAgentExpanded.get(),
     members: $hiveMembers.get().map((m) => ({
@@ -1534,6 +1609,8 @@ async function hiveBootHydrate() {
   if (typeof saved.timelineMode === 'string') $hiveTimelineMode.set(saved.timelineMode)
   if (saved.agentExpanded && typeof saved.agentExpanded === 'object') $hiveAgentExpanded.set(saved.agentExpanded)
   if (typeof saved.scratch === 'string') $hiveScratch.set(saved.scratch)
+  if (typeof saved.mission === 'string') $hiveMission.set(saved.mission)
+  if (Array.isArray(saved.tasks)) $hiveTasks.set(saved.tasks.slice(-HIVE_TASK_KEEP))
   if (Array.isArray(saved.timeline)) $hiveTimeline.set(saved.timeline.slice(-120))
   const hydrated = []
   for (const m of saved.members) {
@@ -1699,7 +1776,7 @@ function HiveRosterChip({ m }) {
           jsx(HiveModelSubmenu, { m }),
           jsx(DropdownMenuItem, { onSelect: () => void hiveFreshContext(m.profile), children: 'Fresh context (new session)' }),
           jsx(DropdownMenuSeparator, {}),
-          jsx(DropdownMenuItem, { variant: 'destructive', onSelect: () => hiveRemoveMember(m.profile), children: 'Remove from room' })
+          jsx(DropdownMenuItem, { variant: 'destructive', onSelect: () => void hiveRemoveMember(m.profile), children: 'Remove from room' })
         ]
       })
     ]
@@ -1872,7 +1949,7 @@ function HiveAgentGroup({ profile, messages, expanded, onToggle, unseen }) {
 
 /** Shared follow-mode scroll: auto-scroll only while pinned near the bottom;
  *  show a "↓ latest" chip when the user has scrolled up (SPEC B5). */
-function useFollowScroll(ref, timeline) {
+function hiveUseFollowScroll(ref, timeline) {
   const [pinned, setPinned] = useState(true)
   const getViewport = () => {
     const root = ref.current
@@ -1910,7 +1987,7 @@ function HiveGroupedTimeline() {
   const expanded = useValue($hiveAgentExpanded)
   const seen = useValue($hiveGroupSeen)
   const ref = useRef(null)
-  const follow = useFollowScroll(ref, timeline)
+  const follow = hiveUseFollowScroll(ref, timeline)
   const groups = useMemo(() => hiveGroupTimeline(timeline), [timeline])
   const toggle = (profile) => {
     const next = hiveToggleAgentExpanded($hiveAgentExpanded.get(), profile)
@@ -1948,7 +2025,7 @@ function HiveGroupedTimeline() {
 function HiveTimeline() {
   const timeline = useValue($hiveTimeline)
   const ref = useRef(null)
-  const follow = useFollowScroll(ref, timeline)
+  const follow = hiveUseFollowScroll(ref, timeline)
   return jsx('div', { className: 'relative h-full grow min-h-0', children: [
     jsx(ScrollArea, {
       ref, className: 'h-full grow min-h-0', onScroll: follow.onScroll,
@@ -1990,7 +2067,7 @@ function HiveTimelineModeToggle() {
 }
 
 /** Renders the active timeline presentation (grouped or flat). */
-function TimelineBody() {
+function HiveTimelineBody() {
   const mode = useValue($hiveTimelineMode)
   return mode === 'agents' ? jsx(HiveGroupedTimeline, {}) : jsx(HiveTimeline, {})
 }
@@ -2021,23 +2098,28 @@ function HiveComposer() {
     $hiveComposer.set('')
     $hiveMentionOpen.set('')
     setActive(0)
-    const parsed = hiveRouteUserPost(text, members)
-    if (parsed.relays.length) {
-      for (const r of parsed.relays) {
-        const target = members.find((m) => hiveNormalize(m.profile) === r.target)
-        if (target) {
-          hiveAppendTimeline({ from: 'you', kind: 'relay', text: r.text, to: r.target })
-          // Honest queue state: busy targets show a clock, not a fake pulse.
-          const busy = target.status === 'streaming' || target.status === 'thinking' || target.status === 'tool'
-          if (busy) hiveMarkStatus(target.sessionId, 'queued')
-          void hiveDeliverTo(target, r.text, { from: 'you', ask: r.ask, queued: busy })
-        }
-      }
-    } else {
-      const targets = members.filter((m) => !(m.muted && parsed.broadcast))
+
+    // You can drive the work protocol too: `[task @builder] …` from the
+    // composer assigns real work, not just a message.
+    hiveApplyScratchOps('you', hiveParseScratchOps(text))
+    const work = hiveApplyWorkItems($hiveTasks.get(), {
+      from: 'you',
+      parsed: hiveParseWorkItems(text),
+      ts: Date.now()
+    })
+    if (work.tasks !== $hiveTasks.get()) $hiveTasks.set(work.tasks)
+
+    const scrubbed = hiveScrubMarkers(text)
+    const parsed = hiveRouteUserPost(scrubbed, members)
+    if (!parsed.relays.length && parsed.broadcast) {
       hiveAppendTimeline({ from: 'you', kind: 'user', text: parsed.broadcast, to: null })
-      void hiveDeliverToAll(parsed.broadcast, { from: 'you' })
     }
+    // Same seam the agents use — one policy, so `you` can never be routed by
+    // rules the room doesn't apply to everyone else.
+    void hiveRunPlan(
+      hivePlanDeliveries({ from: 'you', parsed, work, members, swarm: $hiveSwarm.get(), hops: 0 }),
+      'you'
+    )
     hivePersist()
   }
 
@@ -2260,14 +2342,58 @@ function HiveAddMember() {
 }
 
 /** Shared team scratchpad — markdown, injected into every agent turn. */
+/** The work board: what the room has assigned, submitted, and validated. */
+function HiveWorkBoard() {
+  const tasks = useValue($hiveTasks)
+  const open = tasks.filter((t) => t && t.status !== 'passed')
+  if (!open.length) {
+    return jsx('div', { className: 'rounded-md border border-dashed p-2 text-muted-foreground', style: HIVE_T.xs,
+      children: 'No open work items. Assign one with [task @name] …, then ask for a check with [review @name #id].' })
+  }
+  const tone = (s) => (s === 'failed' ? 'var(--ui-danger, #e5484d)' : s === 'submitted' ? 'var(--ui-warning, #f5a524)' : undefined)
+  return jsx('div', { className: 'flex flex-col gap-1', children: open.map((t) =>
+    jsxs('div', { key: t.id, className: 'flex items-center gap-2 rounded-md border px-2 py-1', style: HIVE_T.xs, children: [
+      jsx('span', { className: 'font-mono text-muted-foreground', children: '#' + t.id }),
+      jsx('span', { className: 'font-medium uppercase tracking-wide', style: { color: tone(t.status) }, children: t.status }),
+      jsx('span', { className: 'min-w-0 flex-1 truncate', title: t.title, children: t.title }),
+      jsx('span', { className: 'text-muted-foreground', children: `@${t.owner}${t.reviewer ? ' → @' + t.reviewer : ' · unreviewed'}` })
+    ] }))
+  })
+}
+
 function HiveScratchEditor() {
   const scratch = useValue($hiveScratch)
+  const mission = useValue($hiveMission)
   const [draft, setDraft] = useState(scratch)
+  const [goal, setGoal] = useState(mission)
   const len = draft.length
+  const saveMission = () => {
+    $hiveMission.set(goal)
+    hivePersist()
+    host.notify({ kind: 'success', message: 'Mission set — every member sees it on their next turn.' })
+  }
   return jsxs('div', { className: 'flex h-full min-h-0 flex-col gap-2 p-2', 'data-hive-scratch': true, children: [
+    // Mission: pinned, never trimmed, shipped in every delivery. Without it the
+    // 12-entry digest is the only shared context and the goal scrolls away.
+    jsxs('div', { className: 'flex flex-col gap-1', 'data-hive-mission': true, children: [
+      jsx('span', { className: 'font-medium text-xs', children: 'Mission' }),
+      jsxs('div', { className: 'flex items-center gap-1.5', children: [
+        jsx(Input, {
+          value: goal,
+          onChange: (e) => setGoal(e.target.value),
+          className: 'h-7 flex-1 text-xs',
+          placeholder: 'What is this room trying to achieve? Pinned into every agent turn.'
+        }),
+        jsx(Button, { size: 'sm', disabled: goal === mission, onClick: saveMission, children: 'Set' })
+      ] })
+    ] }),
+    jsxs('div', { className: 'flex flex-col gap-1', children: [
+      jsx('span', { className: 'font-medium text-xs', children: 'Work board' }),
+      jsx(HiveWorkBoard, {})
+    ] }),
     jsxs('div', { className: 'flex items-center justify-between text-xs', children: [
       jsx('span', { className: 'font-medium', children: 'Shared scratchpad' }),
-      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `${len} chars · injected every turn · agents append with [scratchpad]` })
+      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `${len} chars · injected every turn · [scratchpad:Section] appends, [scratchpad:Section!] corrects` })
     ] }),
     jsx(Textarea, {
       value: draft,
@@ -2376,7 +2502,7 @@ function HivePage() {
             ? jsx(HiveScratchEditor, {})
             : jsxs('div', { className: 'flex min-h-0 grow flex-col', children: [
                 jsx(HiveTimelineModeToggle, {}),
-                jsx(TimelineBody, {}),
+                jsx(HiveTimelineBody, {}),
                 jsx(HiveComposer, {})
               ] })
       })
