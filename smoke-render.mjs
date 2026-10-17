@@ -367,16 +367,114 @@ async function inSandbox() {
   ok('a scratchpad marker produced a system card', html.includes('updated the scratchpad'))
   ok('the raw scratchpad marker never reaches the feed', !html.includes('[scratchpad'))
 
-  // A forced failure marks the row errored (A4's error state).
+  // A forced failure marks the row errored (A4's error state). The stub now
+  // uses the REAL delivery shape: GatewayEvent.payload is the ErrorPayload
+  // `{message}` (tui_gateway/contracts/events.py → gateway-events.ts).
   emit('message.start', { session_id: sid, profile: 'default' })
-  emit('error', { session_id: sid, profile: 'default', error: { message: 'boom' } })
+  emit('error', { session_id: sid, profile: 'default', payload: { message: 'boom' } })
   html = render()
   ok('an error event marks the member errored', html.includes('errored') && html.includes('✕'))
+  ok('the real gateway error reason reaches the card (not the literal fallback)',
+    html.includes('boom') && !html.includes('turn failed'))
   ok('the error card offers a retry', html.includes('Retry'))
 
   // Activity tab is a filtered mirror, not a second store.
   ok('the activity filter is exposed as data, not prose',
     !html.includes('data-ts-activity') || html.includes('Tools, work items and room events only'))
+
+  // ── Phase-1 fix re-verification ──────────────────────────────────────────
+  // F1: the overlay sheets used to mount their panels unconditionally, so every
+  // column rendered twice and the approvals query had three observers.
+  console.log('F1 — no duplicate column mounts')
+  const countIn = (hay, needle) => hay.split(needle).length - 1
+  ok('each column of the grid is mounted exactly once',
+    countIn(html, 'data-ts-right="true"') === 1 && countIn(html, 'data-ts-team="true"') === 1 && countIn(html, 'data-ts-center="true"') === 1,
+    { right: countIn(html, 'data-ts-right="true"'), team: countIn(html, 'data-ts-team="true"'), center: countIn(html, 'data-ts-center="true"') })
+  ok('a closed overlay sheet does not mount its panel at all', !/class="ts-sheet/.test(html))
+
+  // R2: the overlay sheets and the narrow-only toggles must be reachable in the
+  // 601–1100 px band too, not only under 600 px.
+  console.log('R2 — overlay reachability between 601 px and 1100 px')
+  const mediaBlock = (px) => {
+    const i = cssText.indexOf(`@media (max-width:${px}px){`)
+    if (i === -1) return ''
+    let depth = 0
+    for (let j = i; j < cssText.length; j++) {
+      if (cssText[j] === '{') depth++
+      else if (cssText[j] === '}') { depth--; if (depth === 0) return cssText.slice(i, j + 1) }
+    }
+    return cssText.slice(i)
+  }
+  const block1100 = mediaBlock(1100)
+  const block600 = mediaBlock(600)
+  ok('the ≤1100px block can display the team/right overlay sheets',
+    block1100.includes('.ts-sheet[data-open="true"]{display:block}'), block1100)
+  ok('the ≤1100px block can display the narrow-only toolbar toggles',
+    block1100.includes('.ts-narrow-only{display:inline-flex}'), block1100)
+  ok('the ≤600px block still carries both rules for the single-column case',
+    block600.includes('.ts-sheet[data-open="true"]{display:block}') && block600.includes('.ts-narrow-only{display:inline-flex}'), block600)
+
+  // R1 (BLOCKING): a delta still inside the 50 ms window must NEVER resurrect a
+  // turn that already ended. The old smoke emitted `error` with no pending
+  // delta, so it could not see this.
+  console.log('R1 — delta-window turn resurrection regression')
+  emit('message.start', { session_id: sid, profile: 'default' })
+  emit('message.delta', { session_id: sid, profile: 'default', payload: { text: 'stale partial output' } })
+  ok('a mid-window delta is buffered, not rendered', !render().includes('stale partial output'))
+  emit('error', { session_id: sid, profile: 'default', payload: { message: 'rate limit exceeded' } })
+  html = render()
+  ok('the error reason from the real payload shape reaches the card', html.includes('rate limit exceeded'))
+  ok('immediately after error the member reads errored', html.includes('errored') && html.includes('✕'))
+  const turnRowsAtError = countIn(html, 'data-hive-turn="')
+  ok('folding the tail cancelled the pending window (no live delta timer survives)',
+    timers.filter((t) => !t.cancelled).length === 0, timers.map((t) => `${t.ms}${t.cancelled ? '(cancelled)' : '(LIVE)'}`))
+  runTimers() // the window the plugin would have fired on its own
+  const afterWindow = render()
+  ok('the member STILL reads errored once the window would have elapsed',
+    afterWindow.includes('errored') && afterWindow.includes('✕'))
+  ok('the stale flush opened no new turn and left nothing streaming',
+    countIn(afterWindow, 'data-hive-turn="') === turnRowsAtError && !afterWindow.includes('answering…') && !afterWindow.includes('thinking…'),
+    { turnRowsBefore: turnRowsAtError, turnRowsAfter: countIn(afterWindow, 'data-hive-turn="'), answering: afterWindow.includes('answering…'), thinking: afterWindow.includes('thinking…') })
+  ok('the last turn row is still the error row',
+    afterWindow.slice(afterWindow.lastIndexOf('data-hive-turn="')).startsWith('data-hive-turn="error"'))
+  ok('the stale streamed text was not replayed onto any surface',
+    !afterWindow.replace(/<[^>]*>/g, ' ').includes('stale partial output'))
+
+  console.log('R1b — the assistant.completed fallback folds the tail before closing')
+  emit('message.start', { session_id: sid, profile: 'default' })
+  emit('message.delta', { session_id: sid, profile: 'default', payload: { text: 'the tail the fold must keep' } })
+  advance(2000)
+  emit('assistant.completed', { session_id: sid, profile: 'default', content: '' })
+  await tick(); await tick()
+  html = render()
+  ok('the fallback folded the buffered tail into the closed turn',
+    html.includes('the tail the fold must keep') && html.includes('data-hive-turn="done"'))
+
+  // Stop is an A4 click, and a server-rendered string cannot be clicked here —
+  // so assert the SOURCE ORDER the same fix requires (flush before the fold).
+  const srcText = fs.readFileSync(path.join(process.cwd(), 'plugin.js'), 'utf8')
+  const stopBody = srcText.slice(srcText.indexOf('async function hiveStopMember'), srcText.indexOf('async function hiveResetRoom'))
+  ok('hiveStopMember flushes the pending window BEFORE folding the turn closed',
+    stopBody.indexOf('hiveFlushDelta') !== -1 && stopBody.indexOf('hiveFlushDelta') < stopBody.indexOf('hiveFoldTurn'))
+  ok('hiveFlushDelta refuses to write into a turn that already ended',
+    /if \(hiveOpenTurnIndex\(member\) === -1\) return/.test(srcText))
+  ok('no --ui-danger/--ui-warning fallback literal survives in the plugin',
+    !/--ui-(danger|warning)/.test(srcText))
+
+  console.log('A7 — resubmission returns the row to IN REVIEW (DESIGN §10 A7 corrected)')
+  emit('message.start', { session_id: sid, profile: 'default' })
+  emit('message.delta', { session_id: sid, profile: 'default', payload: { text: `[done #${tid}] fixed it` } })
+  runTimers()
+  advance(2000)
+  emit('message.complete', { session_id: sid, profile: 'default' })
+  await tick()
+  const t7 = render()
+  const taskRegion = (() => { const i = t7.indexOf('data-ts-tasks'); return i === -1 ? '' : t7.slice(i, i + 4000) })()
+  ok('after resubmission the row reads IN REVIEW', /IN REVIEW/.test(taskRegion),
+    { readsInReview: /IN REVIEW/.test(taskRegion), readsOpen: />\s*OPEN\s*</.test(taskRegion) })
+  ok('no row in the Tasks tab reads a bare OPEN during IN REVIEW', !/>\s*OPEN\s*</.test(taskRegion))
+  ok('work cards carry the one-line drawer title as their tooltip',
+    /data-ts-work="task"[^>]*title="task #/.test(t7), t7.match(/<[^>]*data-ts-work="task"[^>]*>/))
 
   console.log('cleanup on unload')
   const listenersBefore = listeners.size

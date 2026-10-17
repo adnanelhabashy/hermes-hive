@@ -232,3 +232,155 @@ the live plugin folder or the app. Those rows are marked BLOCKED above with the
 reason. Nothing in this report is based on the author's prose: every PASS rests
 on a command I ran, and every FAIL is reproduced above.
 
+
+---
+
+# Phase 1 fix pass — FORGE re-verification (2026-10-17, card `t_38382fa2`)
+
+Fixes FORGE's side of SENTRY's FAIL above. Branch `team-studio`, worktree
+`~/Developer/hive-team-studio/worktree`; the live plugin folder was not touched.
+**Committed on branch `team-studio`** (no branch switch, no push) — see
+"Hand-back state" for the hashes and the diff range to review.
+
+## Commands actually run (raw)
+
+```
+$ node test.cjs
+...
+turn-closing safety (R1: a buffered delta must not resurrect a closed turn)
+  ✓ appending text keeps it on the open turn
+  ✓ an open turn is discoverable while it streams
+  ✓ failing a turn keeps the text already folded into it
+  ✓ failing a turn surfaces the real reason
+  ✓ the open-phase set excludes a failed turn
+  ✓ a failed turn is no longer an open turn (the flush guard drops stale text)
+  ✓ folding a turn with no new text keeps the streamed text
+  ✓ a folded turn is no longer open either
+  ✓ an empty error reason still reads as a failure
+
+ALL PASS 292/292
+```
+
+```
+$ node smoke-render.mjs
+...
+F1 — no duplicate column mounts
+  ✓ each column of the grid is mounted exactly once
+  ✓ a closed overlay sheet does not mount its panel at all
+R2 — overlay reachability between 601 px and 1100 px
+  ✓ the ≤1100px block can display the team/right overlay sheets
+  ✓ the ≤1100px block can display the narrow-only toolbar toggles
+  ✓ the ≤600px block still carries both rules for the single-column case
+R1 — delta-window turn resurrection regression
+  ✓ a mid-window delta is buffered, not rendered
+  ✓ the error reason from the real payload shape reaches the card
+  ✓ immediately after error the member reads errored
+  ✓ folding the tail cancelled the pending window (no live delta timer survives)
+  ✓ the member STILL reads errored once the window would have elapsed
+  ✓ the stale flush opened no new turn and left nothing streaming
+  ✓ the last turn row is still the error row
+  ✓ the stale streamed text was not replayed onto any surface
+R1b — the assistant.completed fallback folds the tail before closing
+  ✓ the fallback folded the buffered tail into the closed turn
+  ✓ hiveStopMember flushes the pending window BEFORE folding the turn closed
+  ✓ hiveFlushDelta refuses to write into a turn that already ended
+  ✓ no --ui-danger/--ui-warning fallback literal survives in the plugin
+A7 — resubmission returns the row to IN REVIEW (DESIGN §10 A7 corrected)
+  ✓ after resubmission the row reads IN REVIEW
+  ✓ no row in the Tasks tab reads a bare OPEN during IN REVIEW
+  ✓ work cards carry the one-line drawer title as their tooltip
+cleanup on unload
+  ✓ event subscriptions were actually mounted
+  ✓ onDispose removed every event subscription
+  ✓ onDispose removed the injected style sheet
+  ✓ onDispose flushed the workspace prefs to storage
+
+ALL PASS 72/72
+```
+
+```
+$ cp plugin.js /tmp/plugin-check.mjs && node --check /tmp/plugin-check.mjs
+SYNTAX OK
+```
+
+```
+$ node ../sentry-probe/probe-sentry.mjs
+[A1] rendered structure + duplicate-mount check
+   occurrences of data-ts-right="true" : 1
+   occurrences of data-ts-team="true"  : 1
+   occurrences of data-ts-center="true": 1
+  PASS  exactly one live three-column grid (each column rendered once)
+
+[A4] error inside the 50ms delta window (FORGE harness emits error with NO pending delta)
+  PASS  immediately after error the member reads errored
+  PASS  the member STILL reads errored 50ms later (turn was not resurrected by the stale flush)
+  PASS  the failed turn was not reopened as a new streaming turn
+  PASS  the stale streamed text did not get replayed onto a new turn
+   status labels present after flush: errored
+
+[A4b] the REAL error payload shape (GatewayEvent.payload = {message})
+  PASS  the real gateway error reason reaches the turn card
+
+[A5] raw markers never reach the feed (independent re-check)
+  PASS  a [task @builder] marker produced a TASK card with an id
+  PASS  the raw [task @builder] marker text is absent from the rendered page
+
+[A7] verdict fail -> resubmission status ladder (DESIGN says the row returns to OPEN)
+  PASS  after [done] the Tasks tab reads IN REVIEW
+  PASS  after [verdict fail] the Tasks tab reads FAILED
+  PASS  the failure routes the work back (row explains the resubmission path)
+  FAIL  after resubmission the row reads OPEN (DESIGN A7, literally) — {"readsInReview":true,"readsOpen":false,"readsFailed":false}
+  PASS  ...and it mirrors $hiveTasks by reading IN REVIEW instead (state machine is open/submitted/passed/failed)
+
+[A12] disable -> re-enable leaves no duplicate style element / listener
+  PASS  onDispose removed the injected style
+  PASS  onDispose removed every listener
+
+PROBE RESULT: FAIL 1/15
+```
+
+SENTRY's probe went from `FAIL 6/15` to `FAIL 1/15`. **The one remaining
+failure is not a code defect and is not fixable in code:** the probe's A7 case
+asserts the row reads a bare `OPEN` after resubmission, quoting DESIGN §10 A7
+literally. F4 corrects that sentence in `TEAM_WORKSPACE_DESIGN.md` to "returns
+to **IN REVIEW**" (it contradicted §4.1:265, per the card's "Not required"
+clause, and the card forbids changing the state machine). The probe's own
+companion row in the same block passes. The probe was **not** edited — it is
+SENTRY's artifact — and the corrected expectation is absorbed as two real
+assertions in `smoke-render.mjs`, both green.
+
+## Row-by-row status of every reported finding
+
+| Finding | Status | Evidence |
+|---------|--------|----------|
+| R1 delta-window turn resurrection (blocking) | **FIXED** | guard `plugin.js:2068`; flush in `hiveTurnFail:1549`, `hiveStopMember:1806`, `hiveHandleFallbackCompleted:1443`; new regression block in `smoke-render.mjs` green; probe A4 all 4 rows PASS (were 1 PASS / 3 FAIL) |
+| R2 601–1100 px unreachable | **FIXED** | `plugin.js:1977-1978` moved into the `≤1100px` block; 3 new `smoke-render.mjs` CSS assertions on the extracted block text |
+| F1 duplicate sheet mounts / 3× poll | **FIXED** | `plugin.js:3735-3736` lazy mount; probe A1 now `1/1/1`; smoke asserts exactly one mount per column and no sheet in the DOM while closed |
+| F2 hardcoded colour fallbacks | **FIXED** | `plugin.js:2226,2250,2700` → `--ui-red` / `--ui-yellow`; smoke asserts no `--ui-danger`/`--ui-warning` literal remains; PROGRESS.md claim corrected |
+| F3 error reason never surfaces | **FIXED** | `plugin.js:3836` reads `payload.message` first; smoke's stub switched to the real shape and asserts the reason renders / the literal fallback does not |
+| F4 `hiveCardTitle` dead code | **FIXED (wired)** | used as the work card tooltip `plugin.js:3334`, asserted in smoke; `test.cjs` still covers the pure contract |
+| F4 DESIGN §10 A7 wording | **FIXED** | `TEAM_WORKSPACE_DESIGN.md:566-569` → "returns to IN REVIEW"; probe A7 PASS/FAIL asymmetry recorded above |
+| A7 state machine | **UNCHANGED (deliberate)** | the card's "Not required" clause; `hiveApplyWorkItems` untouched |
+
+## Hand-back state
+
+Committed on branch `team-studio` (**no branch switch, no push**) — the
+re-verification card `t_12e302ea` step 4 diffs `531c6e5..HEAD`, so HEAD has to
+carry the rework. The commit hash is recorded in the kanban handoff for
+`t_38382fa2`.
+
+```
+$ git status --porcelain        # after the commit — empty
+
+plugin.js        sha256 b27f4c7a99262a1c6e3436f5ed4fb0f024af0215b3607cc2598212ea319548a8
+smoke-render.mjs sha256 2f3c6ebb57aa221b6dec1dc26c1d8105fe9e6a40a19c1f7a384db9a88f763518
+test.cjs         sha256 35a7a5cee55639aabd851a5f4032651b4621d1449b082bef78bd5d55b020a09f
+```
+
+## What this pass could NOT verify (stated plainly)
+
+The same in-app items SENTRY marked BLOCKED: real pixel layout (A1/A2), a light
+theme repaint (A3), an in-app Stop click (A4 — only the SOURCE ORDER of the
+flush in `hiveStopMember` is asserted here, not the click), a live approval poll
+(A8), a real disable→re-enable (A12), other panes (A13). `smoke-render.mjs`
+applies no CSS, opens no pane and stubs `host.request`.

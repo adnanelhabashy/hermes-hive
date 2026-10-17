@@ -1440,6 +1440,8 @@ async function hiveHandleAssistantDone(e, content) {
 async function hiveHandleFallbackCompleted(e) {
   const member = hiveMemberBySession(e.session_id, e.profile)
   if (!member) return
+  // The fallback closes the turn too, so the buffered tail must land first.
+  hiveFlushDelta(e.session_id)
   const open = hiveLastOpenTurn($hiveTimeline.get(), member.profile)
   const content = String((e.content || '').trim() || (open ? open.text : '') || '')
   if (!content && !open) return
@@ -1547,6 +1549,11 @@ function hiveFoldTurn(member, finalText) {
 
 /** Mark the member's open turn failed (SPEC B3 honest status). */
 function hiveTurnFail(member, error) {
+  if (!member) return
+  // Fold any buffered delta into the turn BEFORE it closes. Without this the
+  // still-pending window would flush onto a turn that no longer exists (the
+  // guard in hiveFlushDelta then drops it) and the tail would be lost.
+  if (member.sessionId) hiveFlushDelta(member.sessionId)
   const i = hiveOpenTurnIndex(member)
   const tl = $hiveTimeline.get()
   if (i === -1) {
@@ -1798,6 +1805,9 @@ async function hiveStopMember(profile) {
   if (!m || !m.sessionId) return
   try {
     await host.request('session.interrupt', { session_id: m.sessionId })
+    // Fold the buffered tail into the turn being closed (Stop is an A4 user
+    // action): flush first, then close, so nothing is orphaned mid-window.
+    hiveFlushDelta(m.sessionId)
     hiveMarkStatus(m.sessionId, 'idle')
     hiveFoldTurn(m, undefined) // close the spine with whatever streamed so far
     hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${m.profile} stopped`, to: null })
@@ -1964,6 +1974,8 @@ const HIVE_TS_CSS = `
 .ts-workspace{grid-template-columns:var(--ts-team-w) minmax(0,1fr) 48px}
 .ts-right-body{display:none}
 .ts-rail{display:flex;flex-direction:column;align-items:center;gap:.25rem;padding-top:.5rem}
+.ts-narrow-only{display:inline-flex}
+.ts-sheet[data-open="true"]{display:block}
 }
 @media (max-width:860px){
 .ts-workspace{grid-template-columns:56px minmax(0,1fr) 48px}
@@ -2055,6 +2067,7 @@ function hiveFlushDelta(sessionId) {
   if (!cur.text) return
   const member = hiveMemberBySession(sessionId)
   if (!member) return
+  if (hiveOpenTurnIndex(member) === -1) return // the turn already ended: drop stale text
   hiveAppendTurnText(member, cur.text)
   hiveMarkStatus(sessionId, 'streaming')
 }
@@ -2223,7 +2236,7 @@ function HiveTurnRow({ turn }) {
         turn.phase === 'thinking' && jsx('span', { className: 'animate-pulse text-muted-foreground', children: 'thinking…' }),
         turn.phase === 'tool' && jsx('span', { className: 'animate-pulse text-muted-foreground', children: `⚙ ${turn.tool || 'tool'}` }),
         turn.phase === 'streaming' && jsx('span', { className: 'animate-pulse text-muted-foreground', children: 'answering…' }),
-        turn.phase === 'error' && jsx('span', { style: { color: 'var(--ui-danger, #e5484d)' }, className: 'font-semibold', children: '✕ error' }),
+        turn.phase === 'error' && jsx('span', { style: { color: 'var(--ui-red)' }, className: 'font-semibold', children: '✕ error' }),
         turn.phase === 'done' && jsx('span', { className: 'text-muted-foreground', children: '✓ done' }),
         jsx('time', { className: 'text-muted-foreground', style: { fontSize: 11, lineHeight: '14px' }, children: hiveTime(turn.ts) }),
         busy && jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: hiveFmtDur(dur) })
@@ -2247,7 +2260,7 @@ function HiveTurnRow({ turn }) {
       // error card
       turn.phase === 'error' && jsx('div', {
         className: 'rounded-md border p-2 text-xs',
-        style: { borderColor: 'var(--ui-danger, #e5484d)', background: 'color-mix(in srgb, var(--ui-danger, #e5484d) 8%, transparent)' },
+        style: { borderColor: 'var(--ui-red)', background: 'color-mix(in srgb, var(--ui-red) 8%, transparent)' },
         children: jsxs('div', { className: 'flex flex-col gap-1.5', children: [
           jsx('div', { className: 'min-w-0 break-words text-destructive', style: HIVE_T.wrap, children: turn.error || 'turn failed' }),
           jsxs('div', { className: 'flex gap-1.5', children: [
@@ -2697,7 +2710,7 @@ function HiveWorkBoard() {
     return jsx('div', { className: 'rounded-md border border-dashed p-2 text-muted-foreground', style: HIVE_T.xs,
       children: 'No open work items. Assign one with [task @name] …, then ask for a check with [review @name #id].' })
   }
-  const tone = (s) => (s === 'failed' ? 'var(--ui-danger, #e5484d)' : s === 'submitted' ? 'var(--ui-warning, #f5a524)' : undefined)
+  const tone = (s) => (s === 'failed' ? 'var(--ui-red)' : s === 'submitted' ? 'var(--ui-yellow)' : undefined)
   return jsx('div', { className: 'flex flex-col gap-1', children: open.map((t) =>
     jsxs('div', { key: t.id, className: 'flex items-center gap-2 rounded-md border px-2 py-1', style: HIVE_T.xs, children: [
       jsx('span', { className: 'font-mono text-muted-foreground', children: '#' + t.id }),
@@ -3317,6 +3330,9 @@ function TsWorkCard({ entry }) {
     : `@${entry.reviewer} ← @${entry.owner || '?'}`
   return jsxs('div', {
     className: 'ts-card flex flex-col gap-1', 'data-ts-work': kind,
+    // The one-line drawer title (hiveCardTitle) as the native tooltip, so a
+    // long work card is identifiable from its header alone.
+    title: hiveCardTitle(entry),
     style: { borderLeft: `2px solid ${tone}` },
     children: [
       jsxs('div', { className: 'flex items-center gap-2', style: HIVE_T.xs, children: [
@@ -3718,8 +3734,11 @@ function TsWorkspace() {
       jsx(TsConversationPanel, {}),
       jsx(TsRightPanel, {}),
       jsx(TsBottomDock, {}),
-      jsx(TsSheet, { side: 'team', open: !!sheets.team, children: jsx(TsTeamPanel, {}) }),
-      jsx(TsSheet, { side: 'right', open: !!sheets.right, children: jsx(TsRightPanel, {}) })
+      // Lazy: a closed sheet must not mount its panel. Mounting both sheets
+      // unconditionally rendered every column twice and gave the approvals
+      // query three observers sharing one query key (3x poll per tick).
+      !!sheets.team && jsx(TsSheet, { side: 'team', open: true, children: jsx(TsTeamPanel, {}) }),
+      !!sheets.right && jsx(TsSheet, { side: 'right', open: true, children: jsx(TsRightPanel, {}) })
     ]
   })
 }
@@ -3815,7 +3834,9 @@ export default {
       disposers.push(host.onEvent('error', (e) => {
         const m = hiveMemberBySession(e.session_id, e.profile)
         if (!m) return
-        hiveTurnFail(m, (e.error && e.error.message) || (e.payload && e.payload.error) || 'turn failed')
+        // Gateway ErrorPayload is `{message}` (tui_gateway/contracts/events.py),
+        // delivered as GatewayEvent.payload; `e.error` is the older shape.
+        hiveTurnFail(m, (e.payload && e.payload.message) || (e.error && e.error.message) || 'turn failed')
       }))
     } catch { /* event type not offered — fine */ }
     disposers.push(host.onEvent('message.complete', (e) => {

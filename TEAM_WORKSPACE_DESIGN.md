@@ -565,7 +565,8 @@ Function:
       existing delivery policy (suppression rows appear as SystemCards).
 - [ ] A7. Tasks tab statuses exactly mirror `$hiveTasks` state (OPEN /
       IN REVIEW / PASSED / FAILED); a [verdict fail] routes work back and the
-      row returns to OPEN on resubmission.
+      row returns to IN REVIEW on resubmission (§4.1:265 — the earlier "returns
+      to OPEN" wording here contradicted §4.1 and the state machine).
 - [ ] A8. Approvals tab lists a real pending approval (trigger one in a member
       session) and responding from the tab resolves it — OR the tab shows its
       documented degraded state if S4 fails.

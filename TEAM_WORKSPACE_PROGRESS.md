@@ -117,9 +117,14 @@
   rows are `.ts-card` and tab bodies render outside the Radix root; the design's
   `--ui-error` / `--ui-success` / `--ui-danger` / `--ui-warning` names do **not**
   exist → status/verdict tones use the real `--ui-red` / `--ui-yellow` /
-  `--ui-green` / `--ui-text-tertiary` (this also removed the two dead
-  `var(--ui-danger, #e5484d)` / `var(--ui-warning, #f5a524)` fallbacks, which
-  were live hardcoded colors).
+  `--ui-green` / `--ui-text-tertiary`. **Corrected 2026-10-17 (Phase 1 fix
+  pass, card `t_38382fa2`):** the claim that this "also removed the two dead
+  `var(--ui-danger, #e5484d)` / `var(--ui-warning, #f5a524)` fallbacks" was
+  **wrong**. Of the 4 baseline occurrences exactly **1** disappeared, and only
+  because `HiveRosterChip` was deleted along with the roster strip. The other
+  three stayed live in reused components (`HiveTurnRow` header `:2226` and
+  error card `:2250`, `HiveWorkBoard` `:2700`). They are fixed in the Phase 1
+  fix pass below.
 - **S3 (projects.*) — VERIFIED against the LIVE gateway**, not just by
   registration: a standalone JSON-RPC client on the running desktop's
   `/api/ws` returned real payloads —
@@ -170,8 +175,10 @@ of which are SENTRY's.
    `[done` / `[verdict` / `[scratchpad` text and finds none.)
 2. **`--ui-danger` / `--ui-warning` were never defined** in the app's
    stylesheet, so the existing error/warning tones silently used hardcoded hex
-   fallbacks. Replaced with the real vars (no behavior change in dark mode,
-   correct in light).
+   fallbacks. The NEW status/verdict tones were written against the real vars
+   from the start (no behavior change in dark mode, correct in light). The three
+   PRE-EXISTING fallbacks in the reused components were **not** removed here —
+   corrected above; they are removed in the Phase 1 fix pass (`t_38382fa2`).
 3. **`host.navigate` cannot open a pane** (it is a route door —
    `src/app/routes.ts`). The design's bottom dock said "`host.navigate` to the
    native `terminal` pane"; that would have done nothing. Implemented with
@@ -255,3 +262,136 @@ literal and only real vars; it cannot repaint), A4 in-app Stop against a real
 session, A8 a real pending approval, A9 the Files/Workflow degraded states under
 a real failure, A12 console + duplicate-rows across disable/re-enable, A13 other
 plugins/panes unaffected.
+
+## 2026-10-17 — Phase 1 fix pass (FORGE, board task `t_38382fa2`)
+
+Worked the full findings checklist from SENTRY's FAIL on `t_6d3f2ad7`
+(`TEAM_WORKSPACE_TESTS.md` §"Phase 1 — SENTRY verification"). Branch
+`team-studio`, worktree `~/Developer/hive-team-studio/worktree`. The live folder
+`~/.hermes/desktop-plugins/buzz-hive/` was not touched.
+
+### R1 — BLOCKING: a buffered delta resurrected a turn that already ended
+
+Both halves of the required fix are in:
+
+1. **Guard** — `hiveFlushDelta` now refuses to write into a turn that is no
+   longer open (`plugin.js:2068`):
+   `if (hiveOpenTurnIndex(member) === -1) return`. This is what makes the flush
+   *unable* to open a new turn, whatever path closed the previous one.
+2. **Flush before closing** — the three non-`message.complete` endings now fold
+   the buffered tail into the turn they are closing instead of orphaning it:
+   - `hiveTurnFail` (`:1549`, first statement — covers the `error` event),
+   - `hiveStopMember` (`:1806`, before `hiveFoldTurn` — Stop is an A4 action),
+   - `hiveHandleFallbackCompleted` (`:1443`, before the open turn is read).
+
+   `message.complete` already flushed (`:3824`).
+
+Regression test added to `smoke-render.mjs`: `message.start` → `message.delta`
+→ `error` **with the delta still inside the 50 ms window**, then the window is
+run. Asserts the member still reads `errored`, no live delta timer survives, no
+new turn row appears, nothing reads `answering…`, and the stale text is not
+replayed anywhere. The old handler emitted `error` with no pending delta, which
+is exactly why it could not see this.
+
+### R2 — right/team panel content unreachable between 601 px and 1100 px
+
+`.ts-sheet[data-open="true"]{display:block}` and
+`.ts-narrow-only{display:inline-flex}` moved from the `≤600px` block into the
+`≤1100px` block (`plugin.js:1977-1978`); the `≤600px` copies stay for the
+single-column case. In 601–1100 px the rail's tabs and the team row detail now
+open as the overlay DESIGN §1.3 asks for.
+
+### F1 — `TsSheet` mounted its children while closed
+
+`TsWorkspace` now mounts a sheet only when it is open (`plugin.js:3735-3736`).
+Before: `data-ts-right="true"` ×2, `data-ts-team="true"` ×2 and three observers
+on `['buzz-hive','approvals',key]` (badge + both `TsRightPanel` copies), so the
+5 s approval poll fired 3× per tick. Now one of each, two observers, and the
+sheets are not in the DOM at all while closed.
+
+### F2 — three live hardcoded colour fallbacks
+
+`var(--ui-danger, #e5484d)` / `var(--ui-warning, #f5a524)` at `:2226`, `:2250`
+and `:2700` replaced with the real theme vars (`--ui-red` / `--ui-yellow`), so
+the same FAILED item is one colour in the Work board and the Tasks tab.
+**The earlier claim in this file that these had already been removed was wrong
+and is corrected above** — only 1 of the 4 baseline occurrences ever
+disappeared, and only because `HiveRosterChip` was deleted with the roster
+strip.
+
+### F3 — the error reason never surfaced
+
+The `error` handler read `e.error.message` / `e.payload.error`, but the
+gateway's `ErrorPayload` is `{message}` (`tui_gateway/contracts/events.py:112`,
+delivered as `GatewayEvent.payload`, `apps/shared/src/gateway-events.ts:46`) —
+so every error card showed the literal `turn failed`. Now
+`(e.payload && e.payload.message) || (e.error && e.error.message) || 'turn failed'`
+(`:3836`), and `smoke-render.mjs` emits the REAL shape and asserts the reason
+renders.
+
+### F4 — cleanups
+
+- `hiveCardTitle` (`:1175`) was dead. Wired, not deleted: the work cards now
+  carry it as their native tooltip (`plugin.js:3334`), asserted in
+  `smoke-render.mjs`.
+- `TEAM_WORKSPACE_DESIGN.md` §10 A7 corrected: "the row returns to **IN
+  REVIEW** on resubmission", with a pointer to §4.1:265. The state machine was
+  not changed (A7-as-written was the document's defect).
+- No raw `--ui-danger` / `--ui-warning` literal remains anywhere in `plugin.js`.
+
+### Verification run (raw)
+
+```
+$ node test.cjs                 # in worktree/
+ALL PASS 292/292                # 283 + 9 new (turn-closing safety)
+
+$ node smoke-render.mjs         # in worktree/
+ALL PASS 72/72                  # 51 + 21 new (F1, R2, R1, R1b, A7, F4)
+
+$ cp plugin.js /tmp/plugin-check.mjs && node --check /tmp/plugin-check.mjs
+SYNTAX OK
+
+$ node ../sentry-probe/probe-sentry.mjs
+PROBE RESULT: FAIL 1/15         # was FAIL 6/15
+```
+
+The single remaining probe failure is **A7's literal expectation** — the probe
+asserts the row reads `OPEN` after resubmission ("DESIGN A7, literally"), which
+is the sentence this pass fixes in DESIGN §10. Its companion row in the same
+block, `...and it mirrors $hiveTasks by reading IN REVIEW instead`, passes. The
+probe was not edited: it is SENTRY's artifact. The corrected expectation is
+absorbed as a real assertion in `smoke-render.mjs` ("after resubmission the row
+reads IN REVIEW" / "no row in the Tasks tab reads a bare OPEN during IN
+REVIEW"), both green.
+
+### Hand-back state
+
+Committed on branch `team-studio` (**no branch switch, no push**). The
+re-verification card `t_12e302ea` step 4 diffs `531c6e5..HEAD`, so HEAD has to
+carry the rework:
+
+```
+$ git status --porcelain        # after the commit — empty
+$ git log -1 --format=%B
+fix(team-studio): P1 rework — delta-window turn resurrection + 601-1100px reachability + F1-F4
+
+plugin.js       sha256 b27f4c7a99262a1c6e3436f5ed4fb0f024af0215b3607cc2598212ea319548a8
+smoke-render.mjs sha256 2f3c6ebb57aa221b6dec1dc26c1d8105fe9e6a40a19c1f7a384db9a88f763518
+test.cjs        sha256 35a7a5cee55639aabd851a5f4032651b4621d1449b082bef78bd5d55b020a09f
+```
+
+The rework commit's hash is recorded in the kanban handoff for `t_38382fa2`;
+the diff to review is `git diff 531c6e5..HEAD` (the range the re-verification
+card names).
+
+The live folder was re-checked after the pass: `git rev-parse HEAD` →
+`929548d4a512c3072e0093b4401ecf903397b057` (= baseline), `git status
+--porcelain` empty, and no `TEAM_WORKSPACE_*` / `smoke-render.mjs` present.
+
+### Left to SENTRY (still cannot be checked headlessly)
+
+The same runtime items as before: A1/A2 real pixel layout, A3 a real light-theme
+repaint, A4 in-app Stop against a real session (the source ORDER of the flush is
+asserted here; the click is not), A8 a real pending approval (the 3×→2× poll
+observation needs a live query client), A12 duplicate rows across a real
+disable/re-enable, A13 other plugins/panes.

@@ -794,5 +794,29 @@ console.log('hiveOrderMembers (team panel order)')
     hiveOrderMembers([{ profile: 'zed' }, { profile: 'aaa' }]).map((m) => m.profile), ['aaa', 'zed'])
 }
 
+console.log('turn-closing safety (R1: a buffered delta must not resurrect a closed turn)')
+{
+  // The delta window is 50 ms; a `message.delta` still inside it must land on
+  // the turn being closed (or be dropped), never open a new one. These are the
+  // pure invariants the guard and the flush-before-close both rest on.
+  const streamed = hiveTurnAppendText(hiveTurnInit('default', 1000), 'the tail that streamed')
+  deep('appending text keeps it on the open turn', streamed.text, 'the tail that streamed')
+  assert('an open turn is discoverable while it streams', hiveLastOpenTurn([streamed], 'default') !== null)
+
+  const failed = hiveTurnError(streamed, 'rate limit exceeded', 2000)
+  deep('failing a turn keeps the text already folded into it', failed.text, 'the tail that streamed')
+  deep('failing a turn surfaces the real reason', failed.error, 'rate limit exceeded')
+  assert('the open-phase set excludes a failed turn', !HIVE_TURN_OPEN.includes(failed.phase))
+  deep('a failed turn is no longer an open turn (the flush guard drops stale text)',
+    hiveLastOpenTurn([failed], 'default'), null)
+
+  const folded = hiveTurnFold(streamed, undefined, 3000)
+  deep('folding a turn with no new text keeps the streamed text', folded.text, 'the tail that streamed')
+  deep('a folded turn is no longer open either', hiveLastOpenTurn([folded], 'default'), null)
+
+  deep('an empty error reason still reads as a failure',
+    hiveTurnError(hiveTurnInit('default', 1000), '', 2000).error, 'turn failed')
+}
+
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))
 process.exit(fail ? 1 : 0)
