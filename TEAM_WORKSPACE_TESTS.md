@@ -398,6 +398,11 @@ real browser engine for the layout claim `smoke-render.mjs` cannot make.
 **FAIL — 1 of 6 findings outstanding (R2). R1, F1, F2, F3, F4 verified fixed.
 No new regression, no weakened test, no invented API.**
 
+> **Superseded for R2 only** (2026-10-17, card `t_4bfff93b`): the residual was
+> fixed in `cf40f53` and re-measured **PASS** — see
+> "Phase 1 — re-verification #2" at the end of this file. The R1 / F1–F4 rows
+> below still stand as written.
+
 `smoke-render.mjs`'s two new R2 rows assert the *text* of the `≤1100px` CSS
 block (a third asserts the `≤600px` copies survive). They pass, and the block is
 indeed correct as text — but the acceptance criterion for R2 is "the rail opens
@@ -489,7 +494,7 @@ body `flex 337x20` at 1000 / 700 / 600 px — i.e. the sheet becomes usable exac
 | Item | Verdict | Evidence I ran |
 |---|---|---|
 | **R1** delta-window resurrection (blocking) | **FIXED** | Guard present at `plugin.js:2068` and correct: `HIVE_TURN_OPEN` (`:897`) excludes `error`/`done`, so the flush can no longer open a turn. Flush-before-close confirmed as the FIRST statement in `hiveTurnFail` (`:1549`), before `hiveFoldTurn` in `hiveStopMember` (`:1806`), before the open turn is read in `hiveHandleFallbackCompleted` (`:1443`). `message.complete` already flushed. My probe A4 (pending delta → `error`): 4/4 PASS, was 1 PASS / 3 FAIL on `531c6e5`; A4b real payload PASS; A4d (pending delta → `message.complete`) 3/3 PASS — no extra row, nothing left streaming. Probe alone: `ALL PASS 21/21` vs `FAIL 10/21` on the pre-rework plugin, so the probe is still falsifying. |
-| **R2** sheet content reachable at 700/1000 px | **NOT FIXED** | Browser measurement above: sheet `display:block` but its `.ts-right-body` is `none`, tab body `0x0`. The three smoke rows assert block *text*, not reachability. Line refs: `plugin.js:1975` (`.ts-right-body{display:none}` in the same `≤1100px` block as the new `:1977-1978` rules), `:1986-1987` (`.ts-col-team,.ts-col-right{display:none}` at ≤600 px), `:1982` (`.ts-team-body{display:none}` at ≤860 px). |
+| **R2** sheet content reachable at 700/1000 px | **NOT FIXED at `224efbc`** → **FIXED in `cf40f53`** (re-verification #2 below) | Browser measurement above: sheet `display:block` but its `.ts-right-body` is `none`, tab body `0x0`. The three smoke rows assert block *text*, not reachability. Line refs: `plugin.js:1975` (`.ts-right-body{display:none}` in the same `≤1100px` block as the new `:1977-1978` rules), `:1986-1987` (`.ts-col-team,.ts-col-right{display:none}` at ≤600 px), `:1982` (`.ts-team-body{display:none}` at ≤860 px). |
 | **F1** closed sheets double-mounting | **FIXED** | `plugin.js:3740-3741` — sheets are mounted only when open. Measured in my probe: `data-ts-right/team/center` = 1/1/1, `class="ts-sheet` occurrences = 0 while closed, and the buzz-hive query observers per render = **2** (`["approvals","approvals"]` = toolbar badge + right panel), was 3 with 2 sheet copies mounted. Opening a sheet still adds a third mount — inherent to the overlay design (the sheet renders `TsRightPanel` again), not the defect this finding described. |
 | **F2** hardcoded colour literals | **FIXED** | Zero hex/rgb/hsl/`var(--x, #hex)` in `HIVE_TS_CSS` (extracted and scanned programmatically). `--ui-red`/`--ui-yellow` are real: defined at `apps/desktop/src/styles.css:243,245` and present in the installed bundle; `--ui-danger`/`--ui-warning` are defined **nowhere** (grep count 0), which is why the old fallbacks were live literals. PROGRESS.md's false claim is corrected in place, with the truthful count (1 of 4 baseline occurrences had gone). |
 | **F3** error reason surfaces | **FIXED** | Gateway contract verified independently: `tui_gateway/contracts/events.py:111` `ErrorPayload{message}` with the docstring "every `_emit("error", …)` site sets exactly `message`" — I grepped all emission sites (`server.py:1214,3021`, `prompt_turn.py:133,1037`, `methods_prompt.py:685`, `model_switch.py:495`, `compute_host_bridge.py:374`, `session_auto_continue.py:514`) and every one sets `message`; generated client type `apps/shared/src/gateway-contract.generated.ts:4778-4780` agrees, and `apps/shared/src/gateway-events.ts:46` confirms the envelope field is `payload`. The deleted `payload.error` clause was dead code. Probe A4b + smoke both green. |
@@ -834,3 +839,157 @@ layout, and names `css-layout-probe.cjs` as the thing that does.
   target element, not the click path.
 - A live approvals poll, light-theme repaint, real disable→re-enable, other
   panes/plugins — unchanged from the two earlier lists.
+
+---
+
+# Phase 1 — re-verification #2 (2026-10-17, card `t_4bfff93b`, HEAD `cf40f53`)
+
+SENTRY, third pass. Every claim FORGE's `t_0b9b4c3d` pass makes is re-run here
+independently, each with a falsification control. Verification only — no product
+file was touched by this pass.
+
+## Verdict
+
+**PASS.** R2 measured reachable (non-zero box, real engine, real stylesheet) at
+1000 / 700 / 600 px; F6 clean on the race path AND on the ordinary Stop path;
+diff surgical, no test weakened, R1 guard untouched. The two residual notes at
+the bottom are non-blocking and pre-existing.
+
+## Preconditions
+
+| Check | Result |
+|---|---|
+| Live folder `~/.hermes/desktop-plugins/buzz-hive/` untouched | clean: `git status --porcelain` empty, HEAD `929548d`, `plugin.js` sha256 `b968e412…`, mtime 16:15 — predates the pass |
+| HEAD under test | `cf40f538fdaf6191eaed4298f861a36706fb5c64` on `team-studio` |
+| FORGE's published hashes | match on disk: `plugin.js f63a5274…`, `smoke-render.mjs 0449477e…`, `css-layout-probe.cjs 47802547…` |
+
+## Suites re-run (never reused)
+
+```
+$ node test.cjs                            ALL PASS 292/292
+$ node smoke-render.mjs                    ALL PASS 80/80
+$ node ../sentry-probe/probe-sentry.mjs    PROBE RESULT: ALL PASS 21/21
+$ node ../sentry-probe/stop-race.mjs       rows after Stop: 2 / phase: error / empty done: false
+$ node css-layout-probe.cjs --widths=1200,1000,700,600,500   ALL PASS
+```
+
+## R2 — my harness, rebuilt from the render code, re-measured
+
+`sentry-probe/harness-v2.cjs` builds the replica DOM directly from the render
+code at HEAD (`TsWorkspace:3731`, `TsTeamPanel:3282`, `TsAgentRow:3248`,
+`TsRightPanel:3655`, `TsToolbar:3173`), extracts `HIVE_TS_CSS` verbatim from
+`plugin.js`, and links the stylesheet the running app loads
+(`…/dist/assets/index-B89n1Ils.css`). `measure-harness.cjs` reads
+`getComputedStyle` + `getBoundingClientRect` out of headless Chrome; each
+selector is resolved with `querySelectorAll` and printed **per match with its
+ancestor chain**, so the column copy can never be read as the sheet copy.
+
+| Width | sheet `.ts-col-team` root | sheet `.ts-team-body` rows | sheet `.ts-right-body` | sheet tab body | column copies |
+|---|---|---|---|---|---|
+| 1000 px | `flex 338x115.5` | `flex 289x19.5` | `flex 337x79.5` | `flex 337x19.5` | `.ts-right-body none 0x0` + `.ts-rail flex 47x68` (designed) |
+| 700 px | `flex 338x115.5` | `flex 289x19.5` | `flex 337x79.5` | `flex 337x19.5` | `.ts-col-team` 56x737, rows `none 0x0` (designed); `.ts-right-body none 0x0` (designed) |
+| 600 px | `flex 338x115.5` | `flex 289x19.5` | `flex 337x79.5` | `flex 337x19.5` | `.ts-col-team` and `.ts-col-right` both `none 0x0` (designed) |
+| 1200 px (control) | `none 0x0` (out of band) | — | — | — | columns intact `240/640/320 x 737`, `.ts-right-body flex 319x737` |
+
+Falsification control — the same harness with the CSS of `224efbc`:
+
+| Width | Pre-fix sheet state |
+|---|---|
+| 1000 px | `.ts-right-body` `none 0x0`, tab body `0x0` — the R2 defect reproduced |
+| 700 px | `.ts-team-body` rows `none 0x0` AND `.ts-right-body` `none 0x0` |
+| 600 px | sheet `.ts-col-team` root `none 0x0` — the sheet rendered nothing |
+
+The harness therefore discriminates pre from post: the PASS is not a vacuous
+probe. Two further controls FORGE's probe does not have:
+
+- **No app stylesheet**: sheet bodies stay non-zero (`block 340x64` /
+  `block 340x18`) — the pass does not lean on the app CSS.
+- **Boundary sweep** at 1101 / 1100 / 861 / 860 / 601 / 600 px: each boundary
+  flips exactly at the documented breakpoint, and the sheets are populated at
+  every width ≤ 1100 including the boundary itself. No off-by-one.
+
+## R2 — whole-subtree scan: nothing inside a sheet is hidden
+
+A fixed target list can miss a rule, so `sentry-probe/scan-hidden.cjs`
+enumerates **every** element inside each sheet and reports `display:none`,
+`visibility:hidden` or a zero-area box at each width.
+
+```
+POST (cf40f53)
+  1000 px  sheet team: 21 elements  HIDDEN: 0  ZERO-SIZE: 1 (span.flex-1 strip spacer)
+           sheet right: 13 elements HIDDEN: 0  ZERO-SIZE: 1 (span.flex-1 strip spacer)
+  700 px   both sheets HIDDEN: 0    600 px  both sheets HIDDEN: 0
+
+PRE (224efbc, control)
+  1000 px  sheet right: 13 elements HIDDEN: 1
+              div.ts-right-body.flex.min-h-0.grow.flex-col  display=none
+              + 6 zero-size descendants (tab body, tabs list, tab body div)
+  700 px   sheet team HIDDEN: 3
+              span.ts-team-body.flex.min-w-0.flex-1.items-center.gap-1.5  display=none
+              span.ts-team-body.flex.min-w-0.flex-1.flex-col.gap-0.5       display=none
+              span.ts-team-body.shrink-0.text-muted-foreground             display=none
+```
+
+The only hidden/zero element left in the post-fix sheets is the `flex-1` spacer
+in each `.ts-strip`, which is zero-height by design in both states.
+
+## F6 — both branches of the new guard, not just the race
+
+Race re-run (`stop-race.mjs`: `error` lands during the `session.interrupt`
+await), with the pre-fix plugin as control:
+
+```
+POST (cf40f53):  rows before Stop: 2 → after 2   last turn row: error  empty done materialized: false
+PRE  (224efbc):  rows before Stop: 2 → after 3   last turn row: done   empty done materialized: true
+```
+
+The guard's other branch — an ordinary Stop with no competing error — is not
+covered by FORGE's reproducer, so I wrote one (`stop-norace2.mjs`: the same
+probe with the injected error addressed to a different session):
+
+```
+rows after Stop: 2   last turn row: done   empty done materialized: false
+streamed text survived the Stop fold: true
+turn row phases: done=2 error=0 open=0
+```
+
+So Stop still closes a live turn, keeps the streamed tail (flush-before-close
+order intact), and leaves nothing open. Derived member status follows the last
+turn on both paths (`errored` after the race, `idle` on the happy path) — no
+orphan status.
+
+## Regression / hygiene
+
+| Check | Result |
+|---|---|
+| `git diff 224efbc..HEAD -- plugin.js` | 2 hunks only: the F6 guard (1 line + comment) and 3 CSS selector lines |
+| `git diff --numstat 224efbc..HEAD` | `plugin.js 8/4`, `smoke-render.mjs 40/0`, `css-layout-probe.cjs 238/0` (new), docs the rest |
+| `test.cjs` | absent from the diff — untouched |
+| `smoke-render.mjs` | insertions only (`40/0`): no assertion rewritten, deleted or weakened |
+| R1 flush guard `hiveFlushDelta` (`plugin.js:2074`) | untouched by the diff; probe A4 rows still 4/4 PASS |
+| syntax | `node --check` on `plugin.js` → clean |
+
+## Residual notes (non-blocking, pre-existing — not regressions)
+
+1. The right sheet renders its own `.ts-rail` (`flex 337x68` at ≤1100 px),
+   because `TsRightPanel` mounts the rail unconditionally and DESIGN §1.3 asks
+   for "same component, different container class". It was there before this
+   pass too (pre-fix probe: `flex 337x68`). Cosmetic; no content lost.
+2. `hiveStopMember` still calls `hiveMarkStatus(sessionId, 'idle')` before the
+   guarded fold, so after a race Stop the stored status is `idle` while the last
+   turn row reads `error`. The rendered status is derived from the last turn, so
+   the UI reads `errored` — coherent, and unchanged by this pass.
+
+## What re-verification #2 still could not verify
+
+- The **running app**. The R2 numbers come from real Chrome with the real
+  stylesheet on a replica DOM; I did not drive a real Hermes window at 700/1000 px
+  in this run, so a populated Work sheet *inside the app* remains unproven by me.
+- A real mouse click on the rail / toolbar toggle, a live approvals poll, theme
+  repaint, real disable→re-enable — as in the two earlier lists.
+
+## Probe files added this pass
+
+`sentry-probe/harness-v2.cjs`, `measure-harness.cjs`, `scan-hidden.cjs`,
+`stop-norace.mjs`, `stop-norace2.mjs`, `stop-race-status.mjs` — dependency-free
+and runnable, so the next pass re-measures instead of re-reading.
