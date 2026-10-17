@@ -938,6 +938,189 @@ function hiveGroupUnseen(timeline, profile, seenTs) {
   return (timeline || []).filter((m) => hiveNormalize(m.from) === norm && (m.ts || 0) > since).length
 }
 
+// ── Phase 1 (Team Studio) pure helpers ─────────────────────────────────────
+// Status, labels, card mapping, delta batching and payload clipping. All pure,
+// so test.cjs covers them with no DOM and no SDK. The shell layer keeps the
+// timers and the atoms — nothing here reads host state.
+
+const HIVE_TIMELINE_MEM = 500 // in-memory timeline entries kept
+const HIVE_TIMELINE_KEEP = 120 // entries persisted into hive.v2
+const HIVE_PAYLOAD_MAX = 2048 // chars of tool/artifact payload kept
+const HIVE_DELTA_WINDOW_MS = 50 // message.delta coalescing window
+
+/** Clip stored/render payloads (tool output, artifacts). Head-first, like the
+ *  scratchpad: the first bytes of a command result are the informative ones. */
+function hiveTruncatePayload(text, max = HIVE_PAYLOAD_MAX) {
+  const s = String(text == null ? '' : text)
+  const limit = Number.isFinite(max) && max > 0 ? max : HIVE_PAYLOAD_MAX
+  return s.length > limit ? s.slice(0, limit) + '…' : s
+}
+
+/** Cap a timeline list keeping the TAIL (newest), never mutating the input. */
+function hiveCapTimeline(list, max = HIVE_TIMELINE_MEM) {
+  const l = Array.isArray(list) ? list : []
+  const limit = Number.isFinite(max) && max > 0 ? max : HIVE_TIMELINE_MEM
+  return l.length > limit ? l.slice(-limit) : l.slice()
+}
+
+/** The LAST timeline entry belonging to a profile. Derived-status input. */
+function hiveLastProfileEntry(timeline, profile) {
+  const norm = hiveNormalize(String(profile || ''))
+  const tl = timeline || []
+  for (let i = tl.length - 1; i >= 0; i--) {
+    const m = tl[i]
+    if (!m) continue
+    const who = typeof m.from === 'string' ? m.from : (m.from && m.from.profile) || ''
+    if (hiveNormalize(who) === norm) return m
+  }
+  return null
+}
+
+/**
+ * Member status is DERIVED, never stored (§2.4): computed from the member's
+ * own session plus its timeline records, so it cannot drift from the stream.
+ *   offline → no live session
+ *   error   → the member's latest entry is a failed turn (clears the moment a
+ *             new turn starts, because that turn becomes the latest entry)
+ *   working → its open turn has a tool call still running
+ *   thinking→ its open turn's latest signal was a thinking/reasoning delta
+ *             (a message.delta moves the phase to 'streaming', so this is
+ *             "thinking since the last message.delta" by construction)
+ *   busy    → any other open turn (queued / streaming)
+ *   idle    → no open turn
+ */
+function hiveMemberStatus(member, timeline) {
+  if (!member || !member.sessionId) return 'offline'
+  const last = hiveLastProfileEntry(timeline, member.profile)
+  if (last && last.kind === 'turn' && last.phase === 'error') return 'error'
+  const open = hiveLastOpenTurn(timeline, member.profile)
+  if (!open) return 'idle'
+  if ((open.tools || []).some((t) => t && t.status === 'run')) return 'working'
+  if (open.phase === 'thinking') return 'thinking'
+  return 'busy'
+}
+
+// Status → SDK StatusDot tone / label / glyph. Tones are the SDK's own
+// (good | muted | warn | bad); no color literal is chosen here.
+const HIVE_STATUS_TONE = Object.freeze({
+  offline: 'muted', error: 'bad', working: 'good', thinking: 'muted', busy: 'good', idle: 'muted'
+})
+const HIVE_STATUS_LABEL = Object.freeze({
+  offline: 'offline', error: 'errored', working: 'using a tool',
+  thinking: 'thinking…', busy: 'answering…', idle: 'idle'
+})
+const HIVE_STATUS_GLYPH = Object.freeze({
+  error: '✕', working: '⚙', thinking: '···', busy: '…', idle: '', offline: ''
+})
+
+function hiveStatusTone(status) {
+  return HIVE_STATUS_TONE[status] || 'muted'
+}
+
+function hiveStatusLabel(status) {
+  return HIVE_STATUS_LABEL[status] || 'idle'
+}
+
+function hiveStatusGlyph(status) {
+  return HIVE_STATUS_GLYPH[status] !== undefined ? HIVE_STATUS_GLYPH[status] : ''
+}
+
+/** True while a derived status means the member is mid-turn. */
+function hiveStatusBusy(status) {
+  return status === 'busy' || status === 'thinking' || status === 'working'
+}
+
+/** Work-item UI status (§4.1) — the REAL state machine statuses. */
+function hiveTaskStatusLabel(task) {
+  const s = String((task && task.status) || '')
+  if (s === 'submitted') return 'IN REVIEW'
+  if (s === 'passed') return 'PASSED'
+  if (s === 'failed') return 'FAILED'
+  return 'OPEN'
+}
+
+/** Theme var for a task status (var(--ui-*) only, no literals). */
+function hiveTaskStatusTone(task) {
+  const s = hiveTaskStatusLabel(task)
+  if (s === 'FAILED') return 'var(--ui-red)'
+  if (s === 'PASSED') return 'var(--ui-green)'
+  if (s === 'IN REVIEW') return 'var(--ui-yellow)'
+  return 'var(--ui-text-tertiary)'
+}
+
+/** Ordered task rows: open work first, then review, then settled. */
+function hiveSortTasks(tasks) {
+  const rank = { open: 0, submitted: 1, failed: 2, passed: 3 }
+  return (tasks || []).slice().sort((a, b) => {
+    const ra = rank[(a && a.status) || 'open'] ?? 4
+    const rb = rank[(b && b.status) || 'open'] ?? 4
+    if (ra !== rb) return ra - rb
+    return ((b && b.ts) || 0) - ((a && a.ts) || 0)
+  })
+}
+
+/** Card type for a timeline entry — the §3.5 mapping as DATA, so the render
+ *  layer is a dumb switch and this table is the single place it lives. */
+function hiveCardKind(entry) {
+  if (!entry) return 'system'
+  if (entry.kind === 'turn') {
+    if (entry.phase === 'error') return 'error'
+    if ((entry.tools || []).length) return 'tool'
+    return 'agent'
+  }
+  if (entry.kind === 'user') return 'user'
+  if (entry.kind === 'system') return 'system'
+  if (entry.kind === 'relay') return entry.to ? 'directed' : 'agent'
+  if (entry.kind === 'task' || entry.kind === 'done' || entry.kind === 'review') return entry.kind
+  return 'agent'
+}
+
+/** Timeline entries → render-ready cards, preserving order. */
+function hiveTimelineToCards(entries) {
+  return (entries || []).filter(Boolean).map((e) => ({ id: e.id, kind: hiveCardKind(e), entry: e }))
+}
+
+// Activity tab (§4.2): structured cards only — no prose bubbles.
+const HIVE_ACTIVITY_KINDS = Object.freeze(['tool', 'task', 'done', 'review', 'error', 'system'])
+
+function hiveActivityCards(entries) {
+  return hiveTimelineToCards(entries).filter((c) => HIVE_ACTIVITY_KINDS.includes(c.kind))
+}
+
+/** Client-side timeline text filter (TimelineHeader search — no backend). */
+function hiveFilterCards(cards, query) {
+  const q = String(query || '').trim().toLowerCase()
+  if (!q) return cards || []
+  return (cards || []).filter((c) => {
+    const e = c.entry || {}
+    const who = typeof e.from === 'string' ? e.from : (e.from && e.from.profile) || ''
+    const hay = `${who} ${e.to || ''} ${e.text || ''} ${e.error || ''} ${e.title || ''} ${e.workId || ''}`
+    return hay.toLowerCase().includes(q)
+  })
+}
+
+/**
+ * Delta coalescer, reducer form (§8.2). The shell layer owns the ~50ms timer;
+ * this owns the accumulation semantics so the buffer is testable without one.
+ * Empty/absent chunks are a no-op on `count` — a delta event with no text must
+ * not count as a batch.
+ */
+function hiveBatchDeltas(pending, chunk) {
+  const p = pending && typeof pending === 'object' ? pending : { text: '', count: 0 }
+  const text = String(p.text == null ? '' : p.text)
+  const count = Number(p.count) || 0
+  const t = String(chunk == null ? '' : chunk)
+  if (!t) return { text, count }
+  return { text: text + t, count: count + 1 }
+}
+
+/** A card's one-line drawer title for the turn spine (tool rows). */
+function hiveCardTitle(entry) {
+  if (!entry) return ''
+  if (entry.kind === 'turn') return hiveActivityPreview(entry)
+  return hiveTruncatePayload(String(entry.text || '').replace(/\s+/g, ' ').trim(), 120)
+}
+
 // --CORE-END--
 
 // ── accents ─────────────────────────────────────────────────────────────────

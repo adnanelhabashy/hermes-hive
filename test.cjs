@@ -20,7 +20,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 // inside the CORE markers, so nothing here re-declares (and silently drifts
 // from) a real plugin value.
 const factory = new Function(
-  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead }`
+  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas, hiveCardTitle, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
 )
 const {
   hiveParseCoordination,
@@ -67,7 +67,29 @@ const {
   hiveScrubMarkers,
   hiveBuildStandingHeader,
   hiveFormatWorkItems,
-  hiveClipHead
+  hiveClipHead,
+  hiveTruncatePayload,
+  hiveCapTimeline,
+  hiveLastProfileEntry,
+  hiveMemberStatus,
+  hiveStatusTone,
+  hiveStatusLabel,
+  hiveStatusGlyph,
+  hiveStatusBusy,
+  hiveTaskStatusLabel,
+  hiveTaskStatusTone,
+  hiveSortTasks,
+  hiveCardKind,
+  hiveTimelineToCards,
+  hiveActivityCards,
+  hiveFilterCards,
+  hiveBatchDeltas,
+  hiveCardTitle,
+  HIVE_TIMELINE_MEM,
+  HIVE_TIMELINE_KEEP,
+  HIVE_PAYLOAD_MAX,
+  HIVE_DELTA_WINDOW_MS,
+  HIVE_ACTIVITY_KINDS
 } = factory()
 
 let pass = 0
@@ -581,6 +603,153 @@ console.log('hiveScrubMarkers')
     !hiveScrubMarkers('[done #a1] fixed the rounding error').includes('rounding'))
   deep('genuine prose alongside a marker still survives',
     hiveScrubMarkers('Handing this over.\n[task @builder] audit the flow'), 'Handing this over.')
+}
+
+// ── Phase 1 (Team Studio) pure logic ────────────────────────────────────────
+
+console.log('hiveMemberStatus (derived — never stored)')
+{
+  const live = { profile: 'builder', sessionId: 's1' }
+  deep('a live session with no turn is idle', hiveMemberStatus(live, []), 'idle')
+  assert('a sessionless member is offline even with activity',
+    hiveMemberStatus({ profile: 'builder', sessionId: null }, [{ kind: 'turn', from: 'builder', phase: 'streaming' }]) === 'offline')
+  deep('a session with no turn is idle', hiveMemberStatus(live, []), 'idle')
+
+  const start = hiveTurnInit('builder', 1000)
+  deep('an open thinking turn reads thinking', hiveMemberStatus(live, [start]), 'thinking')
+  deep('streaming reads busy', hiveMemberStatus(live, [hiveTurnAppendText(start, 'hi')]), 'busy')
+
+  const withTool = hiveTurnAddTool(start, 'terminal', 1100)
+  deep('a running tool reads working', hiveMemberStatus(live, [withTool]), 'working')
+  deep('a finished tool returns to busy',
+    hiveMemberStatus(live, [hiveTurnFinishTool(withTool, 'terminal', 1200, 'ok')]), 'busy')
+  deep('thinking after a tool reads thinking',
+    hiveMemberStatus(live, [{ ...hiveTurnFinishTool(withTool, 'terminal', 1200, 'ok'), phase: 'thinking' }]), 'thinking')
+
+  const failed = hiveTurnError(start, 'boom', 1300)
+  deep('a failed turn reads error', hiveMemberStatus(live, [failed]), 'error')
+  deep('a new turn clears the error',
+    hiveMemberStatus(live, [failed, hiveTurnInit('builder', 1400)]), 'thinking')
+  // Only the member's OWN records count — never a teammate's.
+  deep('another member\'s error does not mark this one',
+    hiveMemberStatus(live, [hiveTurnError(hiveTurnInit('frontier', 1), 'boom', 2)]), 'idle')
+}
+
+console.log('status vocabulary + task labels')
+{
+  deep('busy maps to the good tone', hiveStatusTone('busy'), 'good')
+  deep('error maps to the bad tone', hiveStatusTone('error'), 'bad')
+  deep('an unknown status falls back to muted', hiveStatusTone('nonsense'), 'muted')
+  deep('offline has a label', hiveStatusLabel('offline'), 'offline')
+  deep('working has a glyph', hiveStatusGlyph('working'), '⚙')
+  deep('idle has no glyph', hiveStatusGlyph('idle'), '')
+  assert('busy/thinking/working are the mid-turn set',
+    hiveStatusBusy('busy') && hiveStatusBusy('thinking') && hiveStatusBusy('working'))
+  assert('idle/offline/error are not mid-turn',
+    !hiveStatusBusy('idle') && !hiveStatusBusy('offline') && !hiveStatusBusy('error'))
+
+  deep('open → OPEN', hiveTaskStatusLabel({ status: 'open' }), 'OPEN')
+  deep('submitted → IN REVIEW', hiveTaskStatusLabel({ status: 'submitted' }), 'IN REVIEW')
+  deep('passed → PASSED', hiveTaskStatusLabel({ status: 'passed' }), 'PASSED')
+  deep('failed → FAILED', hiveTaskStatusLabel({ status: 'failed' }), 'FAILED')
+  deep('an unknown task status still reads OPEN', hiveTaskStatusLabel({}), 'OPEN')
+  assert('a failed task is toned by a theme var, never a literal',
+    hiveTaskStatusTone({ status: 'failed' }).startsWith('var(--ui-'))
+  assert('no task tone contains a color literal',
+    ['open', 'submitted', 'passed', 'failed'].every((s) => /^var\(--ui-[a-z-]+\)$/.test(hiveTaskStatusTone({ status: s }))))
+
+  const sorted = hiveSortTasks([
+    { id: 'a', status: 'passed', ts: 5 },
+    { id: 'b', status: 'open', ts: 9 },
+    { id: 'c', status: 'submitted', ts: 7 },
+    { id: 'd', status: 'failed', ts: 1 }
+  ]).map((t) => t.id)
+  deep('open work sorts first, settled last', sorted, ['b', 'c', 'd', 'a'])
+}
+
+console.log('hiveTimelineToCards / hiveActivityCards (event → card mapping)')
+{
+  const timeline = [
+    { id: '1', kind: 'system', from: 'system', text: 'held a relay' },
+    { id: '2', kind: 'turn', from: 'builder', phase: 'done', text: 'done', tools: [], ts: 1 },
+    { id: '3', kind: 'turn', from: 'builder', phase: 'error', error: 'boom', tools: [], ts: 2 },
+    { id: '4', kind: 'turn', from: 'builder', phase: 'streaming', text: '…', tools: [{ name: 'terminal', status: 'run' }], ts: 3 },
+    { id: '5', kind: 'relay', from: 'builder', to: 'frontier', text: 'psst', ts: 4 },
+    { id: '6', kind: 'user', from: 'you', text: 'hello', ts: 5 },
+    { id: '7', kind: 'task', from: 'you', text: 'task #a1 → @builder', ts: 6 },
+    { id: '8', kind: 'done', from: 'builder', text: 'submitted', ts: 7 },
+    { id: '9', kind: 'review', from: 'you', text: 'verdict pass', ts: 8 }
+  ]
+  const cards = hiveTimelineToCards(timeline)
+  deep('every entry maps to exactly one card', cards.length, timeline.length)
+  deep('card order follows the timeline', cards.map((c) => c.kind),
+    ['system', 'agent', 'error', 'tool', 'directed', 'user', 'task', 'done', 'review'])
+
+  deep('a settled turn is an agent card', hiveCardKind({ kind: 'turn', phase: 'done', tools: [] }), 'agent')
+  deep('a turn that used tools is a tool card', hiveCardKind({ kind: 'turn', phase: 'done', tools: [{ name: 'x' }] }), 'tool')
+  deep('a relay without a target is not directed', hiveCardKind({ kind: 'relay', from: 'a', to: null }), 'agent')
+  deep('an unknown kind falls back to a prose card', hiveCardKind({ kind: 'mystery' }), 'agent')
+  deep('a missing entry is a system card', hiveCardKind(null), 'system')
+
+  const activity = hiveActivityCards(timeline)
+  deep('activity drops prose bubbles', activity.map((c) => c.kind),
+    ['system', 'error', 'tool', 'task', 'done', 'review'])
+  assert('activity never includes agent/user/directed prose',
+    !activity.some((c) => c.kind === 'agent' || c.kind === 'user' || c.kind === 'directed'))
+  deep('the activity kind list is the documented one',
+    HIVE_ACTIVITY_KINDS.join(','), 'tool,task,done,review,error,system')
+
+  deep('the timeline filter searches prose',
+    hiveFilterCards(cards, 'psst').map((c) => c.kind), ['directed'])
+  deep('the filter searches work ids',
+    hiveFilterCards(cards, '#a1').map((c) => c.kind), ['task'])
+  deep('the filter searches who spoke',
+    hiveFilterCards(cards, 'frontier').map((c) => c.kind), ['directed'])
+  deep('a blank filter keeps everything', hiveFilterCards(cards, '  ').length, cards.length)
+  deep('a filter that matches nothing is empty', hiveFilterCards(cards, 'zzz').length, 0)
+}
+
+console.log('hiveBatchDeltas (stream coalescing)')
+{
+  const one = hiveBatchDeltas({ text: '', count: 0 }, 'Hel')
+  const two = hiveBatchDeltas(one, 'lo')
+  deep('chunks accumulate in order', two.text, 'Hello')
+  deep('the batch counts real chunks', two.count, 2)
+  const empty = hiveBatchDeltas(two, '')
+  deep('an empty chunk does not change the text', empty.text, 'Hello')
+  deep('an empty chunk does not count as a batch', empty.count, 2)
+  const nullChunk = hiveBatchDeltas(two, null)
+  deep('a null chunk does not count as a batch', nullChunk.count, 2)
+  deep('a missing buffer starts clean', hiveBatchDeltas(undefined, 'x'), { text: 'x', count: 1 })
+  deep('a non-object buffer is ignored', hiveBatchDeltas('nope', 'x'), { text: 'x', count: 1 })
+  deep('the reducer never mutates the input buffer',
+    (() => { const p = { text: 'a', count: 1 }; hiveBatchDeltas(p, 'b'); return p.text + p.count })(), 'a1')
+  deep('batching is not a timer', typeof hiveBatchDeltas(undefined, 'x').handle, 'undefined')
+}
+
+console.log('payload clipping + timeline caps')
+{
+  deep('a short payload is untouched', hiveTruncatePayload('abc', 8), 'abc')
+  deep('a long payload is clipped with an ellipsis', hiveTruncatePayload('abcdefghij', 4), 'abcd…')
+  deep('an empty payload is empty', hiveTruncatePayload(null), '')
+  deep('the default cap is the documented one', HIVE_PAYLOAD_MAX, 2048)
+  deep('a payload exactly at the cap is untouched', hiveTruncatePayload('x'.repeat(2048)), 'x'.repeat(2048))
+
+  const long = Array.from({ length: 600 }, (_, i) => ({ id: String(i) }))
+  deep('the in-memory cap keeps the newest', hiveCapTimeline(long).length, HIVE_TIMELINE_MEM)
+  deep('the cap keeps the TAIL', hiveCapTimeline(long)[HIVE_TIMELINE_MEM - 1].id, '599')
+  deep('a short list is returned as a copy', hiveCapTimeline([{ id: 'a' }]).length, 1)
+  deep('a non-array is an empty list', hiveCapTimeline(null).length, 0)
+  assert('the persisted cap is below the in-memory cap', HIVE_TIMELINE_KEEP < HIVE_TIMELINE_MEM)
+  deep('the delta window is the documented 50ms', HIVE_DELTA_WINDOW_MS, 50)
+
+  const tl = [{ id: '1', kind: 'turn', from: 'builder', phase: 'done', tools: [] }]
+  deep('the last entry for a member is found', hiveLastProfileEntry(tl, 'builder').id, '1')
+  deep('a member with no entries has none', hiveLastProfileEntry(tl, 'nobody'), null)
+  assert('profile lookup is case-insensitive', hiveLastProfileEntry(tl, 'BUILDER') !== null)
+  deep('a card title is a single line',
+    hiveCardTitle({ kind: 'user', text: 'a\n\nb   c' }), 'a b c')
+  deep('a card title is clipped', hiveCardTitle({ kind: 'user', text: 'x'.repeat(400) }).length, 121)
 }
 
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))
