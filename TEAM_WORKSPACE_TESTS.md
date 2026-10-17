@@ -354,7 +354,7 @@ assertions in `smoke-render.mjs`, both green.
 | Finding | Status | Evidence |
 |---------|--------|----------|
 | R1 delta-window turn resurrection (blocking) | **FIXED** | guard `plugin.js:2068`; flush in `hiveTurnFail:1549`, `hiveStopMember:1806`, `hiveHandleFallbackCompleted:1443`; new regression block in `smoke-render.mjs` green; probe A4 all 4 rows PASS (were 1 PASS / 3 FAIL) |
-| R2 601–1100 px unreachable | **FIXED** | `plugin.js:1977-1978` moved into the `≤1100px` block; 3 new `smoke-render.mjs` CSS assertions on the extracted block text |
+| R2 601–1100 px unreachable | **FIXED** | `plugin.js:1977-1978` moved into the `≤1100px` block; 3 new `smoke-render.mjs` CSS assertions on the extracted block text — [SENTRY re-verification, `t_12e302ea`: **superseded**. The sheet now *opens* at 700/1000 px, but its content stays `display:none`. See §"Phase 1 — re-verification" below.] |
 | F1 duplicate sheet mounts / 3× poll | **FIXED** | `plugin.js:3735-3736` lazy mount; probe A1 now `1/1/1`; smoke asserts exactly one mount per column and no sheet in the DOM while closed |
 | F2 hardcoded colour fallbacks | **FIXED** | `plugin.js:2226,2250,2700` → `--ui-red` / `--ui-yellow`; smoke asserts no `--ui-danger`/`--ui-warning` literal remains; PROGRESS.md claim corrected |
 | F3 error reason never surfaces | **FIXED** | `plugin.js:3836` reads `payload.message` first; smoke's stub switched to the real shape and asserts the reason renders / the literal fallback does not |
@@ -384,3 +384,176 @@ theme repaint (A3), an in-app Stop click (A4 — only the SOURCE ORDER of the
 flush in `hiveStopMember` is asserted here, not the click), a live approval poll
 (A8), a real disable→re-enable (A12), other panes (A13). `smoke-render.mjs`
 applies no CSS, opens no pane and stubs `host.request`.
+
+---
+
+# Phase 1 — re-verification (2026-10-17, card `t_12e302ea`, HEAD `224efbc`)
+
+SENTRY, second pass over the rework commit `224efbc`. Not trusting the author's
+summary: every row below is from a command I ran myself on this HEAD, plus a
+real browser engine for the layout claim `smoke-render.mjs` cannot make.
+
+## Verdict
+
+**FAIL — 1 of 6 findings outstanding (R2). R1, F1, F2, F3, F4 verified fixed.
+No new regression, no weakened test, no invented API.**
+
+`smoke-render.mjs`'s two new R2 rows assert the *text* of the `≤1100px` CSS
+block (a third asserts the `≤600px` copies survive). They pass, and the block is
+indeed correct as text — but the acceptance criterion for R2 is "the rail opens
+the sheet **and content is reachable**", and in a real engine the opened sheet
+renders an empty box at 700 px and 1000 px.
+
+## Commands actually run (raw)
+
+```
+# in ~/Developer/hive-team-studio/worktree @ 224efbc
+$ node test.cjs
+ALL PASS 292/292
+$ node smoke-render.mjs
+ALL PASS 72/72
+$ cp plugin.js "$TMPDIR/pc.mjs" && node --check "$TMPDIR/pc.mjs"
+SYNTAX OK
+
+# in ~/Developer/hive-team-studio/sentry-probe (my probe, my harnesses)
+$ node probe-sentry.mjs
+PROBE RESULT: ALL PASS 21/21
+$ PLUGIN_SRC="$TMPDIR/oldprobe/plugin.js" node probe-sentry.mjs   # 531c6e5
+PROBE RESULT: FAIL 10/21
+$ node stop-race.mjs                                              # 224efbc
+rows before Stop: 2   (member status: answering)
+rows after Stop:  3
+empty done turn materialized by Stop: true
+$ PLUGIN_SRC="$TMPDIR/oldprobe/plugin.js" node stop-race.mjs      # 531c6e5
+rows before Stop: 2   (member status: answering)
+rows after Stop:  3
+empty done turn materialized by Stop: true
+```
+
+## R2 — measured in a real browser engine (Chrome/CDP), not by reading CSS
+
+Harness: `sentry-probe/build-css-harness.cjs` → `harness-app-last.html`. `HIVE_TS_CSS`
+is extracted **verbatim from the worktree `plugin.js`** (3755 bytes), the app's real
+Tailwind stylesheet is linked (`/Applications/Hermes.app/…/dist/assets/index-B89n1Ils.css`,
+tailwindcss v4.3.3), and the replica DOM is the exact class structure `TsWorkspace`
+renders (`TsSheet` → `TsRightPanel` root `ts-col ts-col-right` → `ts-right-body flex
+min-h-0 grow flex-col` → tab body, plus `TsRightRail`), with `data-open="true"`
+exactly as the lazy mount now passes it.
+
+| viewport | `.ts-sheet[data-side=right]` | sheet's `.ts-right-body` | sheet's tab body | 48 px-column rail |
+|---|---|---|---|---|
+| 1200 px | `none` (not open) | `flex` | `[0x0]` | `none` |
+| 1000 px | **`block 340x856`** | **`none [0x0]`** | `flex [0x0]` | `flex 47x68` |
+| 700 px | **`block 340x856`** | **`none [0x0]`** | `flex [0x0]` | `flex 47x68` |
+| 600 px | `block 340x856` | `none [0x0]` | `flex [0x0]` | `[0x0]` |
+
+The sheet **container** opens (the moved rule works) but the payload inside it is
+`display:none`: the same `≤1100px` block that hides the column copy
+(`.ts-right-body{display:none}`) also matches the sheet's copy of that element, so
+the sheet shows only the rail buttons. Content is **not** reachable at 700 px or
+1000 px. The toolbar's `.ts-narrow-only` toggles do appear (28×28, measured) and
+they open the same empty sheet.
+
+Not an ordering artifact — identical numbers with the app CSS linked first, linked
+last, and absent. The plugin's `<style>` is unlayered and the app's utilities live
+in `@layer utilities`, so the unlayered `display:none` wins over `.flex{display:flex}`
+whatever the document order.
+
+Same root cause, two more measured sites (all pre-existing, unchanged by `224efbc`):
+
+- **≤600 px: both sheets render nothing at all.** The `≤600px` rule
+  `.ts-col-team,.ts-col-right{display:none}` matches the sheet's *own* panel root
+  (`TsTeamPanel` root = `ts-col ts-col-team`; `TsRightPanel` root = `ts-col ts-col-right`),
+  so `team_sheet_root` measures `display:none [0x0]` at 600 px and 500 px.
+- **601–860 px: the team sheet loses its rows.** `.ts-team-body{display:none}`
+  (the `≤860px` block) also matches inside the sheet: at 700 px the team sheet root
+  is visible (`338x48`) but a roster row body measures `none [0x0]`. At 1000 px that
+  row body is visible (`337x20`), which is why the team sheet is usable at
+  1000 px while the right sheet is not.
+
+Fix shape (validated in the harness, **not** applied to the repo — SENTRY does not
+author): scope the three hide rules so they cannot match inside `.ts-sheet`, e.g.
+
+```
+.ts-right-body{display:none}                    → .ts-workspace > .ts-col-right > .ts-right-body{display:none}
+.ts-team-body{display:none}                     → .ts-workspace > .ts-col-team .ts-team-body{display:none}
+.ts-col-team,.ts-col-right{display:none}        → .ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right{display:none}
+```
+
+With only those three scoped rules the sheet body measures `flex 337x67` and the tab
+body `flex 337x20` at 1000 / 700 / 600 px — i.e. the sheet becomes usable exactly as
+`plugin.js:1977-1978` intends.
+
+## Row-by-row re-verification
+
+| Item | Verdict | Evidence I ran |
+|---|---|---|
+| **R1** delta-window resurrection (blocking) | **FIXED** | Guard present at `plugin.js:2068` and correct: `HIVE_TURN_OPEN` (`:897`) excludes `error`/`done`, so the flush can no longer open a turn. Flush-before-close confirmed as the FIRST statement in `hiveTurnFail` (`:1549`), before `hiveFoldTurn` in `hiveStopMember` (`:1806`), before the open turn is read in `hiveHandleFallbackCompleted` (`:1443`). `message.complete` already flushed. My probe A4 (pending delta → `error`): 4/4 PASS, was 1 PASS / 3 FAIL on `531c6e5`; A4b real payload PASS; A4d (pending delta → `message.complete`) 3/3 PASS — no extra row, nothing left streaming. Probe alone: `ALL PASS 21/21` vs `FAIL 10/21` on the pre-rework plugin, so the probe is still falsifying. |
+| **R2** sheet content reachable at 700/1000 px | **NOT FIXED** | Browser measurement above: sheet `display:block` but its `.ts-right-body` is `none`, tab body `0x0`. The three smoke rows assert block *text*, not reachability. Line refs: `plugin.js:1975` (`.ts-right-body{display:none}` in the same `≤1100px` block as the new `:1977-1978` rules), `:1986-1987` (`.ts-col-team,.ts-col-right{display:none}` at ≤600 px), `:1982` (`.ts-team-body{display:none}` at ≤860 px). |
+| **F1** closed sheets double-mounting | **FIXED** | `plugin.js:3740-3741` — sheets are mounted only when open. Measured in my probe: `data-ts-right/team/center` = 1/1/1, `class="ts-sheet` occurrences = 0 while closed, and the buzz-hive query observers per render = **2** (`["approvals","approvals"]` = toolbar badge + right panel), was 3 with 2 sheet copies mounted. Opening a sheet still adds a third mount — inherent to the overlay design (the sheet renders `TsRightPanel` again), not the defect this finding described. |
+| **F2** hardcoded colour literals | **FIXED** | Zero hex/rgb/hsl/`var(--x, #hex)` in `HIVE_TS_CSS` (extracted and scanned programmatically). `--ui-red`/`--ui-yellow` are real: defined at `apps/desktop/src/styles.css:243,245` and present in the installed bundle; `--ui-danger`/`--ui-warning` are defined **nowhere** (grep count 0), which is why the old fallbacks were live literals. PROGRESS.md's false claim is corrected in place, with the truthful count (1 of 4 baseline occurrences had gone). |
+| **F3** error reason surfaces | **FIXED** | Gateway contract verified independently: `tui_gateway/contracts/events.py:111` `ErrorPayload{message}` with the docstring "every `_emit("error", …)` site sets exactly `message`" — I grepped all emission sites (`server.py:1214,3021`, `prompt_turn.py:133,1037`, `methods_prompt.py:685`, `model_switch.py:495`, `compute_host_bridge.py:374`, `session_auto_continue.py:514`) and every one sets `message`; generated client type `apps/shared/src/gateway-contract.generated.ts:4778-4780` agrees, and `apps/shared/src/gateway-events.ts:46` confirms the envelope field is `payload`. The deleted `payload.error` clause was dead code. Probe A4b + smoke both green. |
+| **F4** `hiveCardTitle` | **FIXED (wired)** | `plugin.js:3335` `title: hiveCardTitle(entry)`; signature is `hiveCardTitle(entry)` and work-card entries carry `.text`, so the tooltip is the clipped one-liner. Verified in the old-code run that this row fails on `531c6e5`. |
+| **F4** DESIGN §10 A7 vs §4.1 | **FIXED** | `TEAM_WORKSPACE_DESIGN.md:567-569` now says "returns to **IN REVIEW** on resubmission (§4.1:265)"; §4.1:263 defines `IN REVIEW = status:'submitted'` and :265 "re-`[done]` returns to submitted". Consistent. Probe A7 now asserts the corrected spec and that A7's sentence matches it — both green. |
+
+## Regression / hygiene checks
+
+- `git diff --numstat 531c6e5..HEAD` → 6 files, 595 insertions, 14 deletions;
+  `plugin.js` is exactly **27 insertions / 6 deletions**: the guard, three flush
+  calls, the two CSS rules, three colour fallbacks, one tooltip prop, the
+  lazy-mount pair, one error-reason read — and the 6 deletions are those same 3
+  colour lines, the 2 sheet lines and the 1 error-reason read, nothing else. No
+  unrelated edits, no new `host.*` method, no new RPC — nothing invented.
+- **Nothing was weakened or deleted to pass.** `test.cjs` is +24/-0; the only
+  deletion in `smoke-render.mjs` is the `error` fixture line the card explicitly
+  told FORGE to reshape. Docs deleted lines are the corrected PROGRESS.md claim.
+- Non-vacuity, measured: the NEW `smoke-render.mjs` run against the OLD `plugin.js`
+  fails **16/72** (R1 window rows, F1 mount rows, R2 CSS rows, F2 literal row, F3
+  reason row, F4 tooltip row) — the harness really does guard these.
+  The NEW `test.cjs` against the OLD plugin passes **292/292**: the 9 added
+  "turn-closing safety" rows are pure-helper rows over `hiveTurnInit/Fold/Error/
+  LastOpenTurn/HIVE_TURN_OPEN`, none of which the rework changed. They document the
+  invariants the fix rests on; they do **not** guard the regression. The guard is
+  `smoke-render.mjs`'s R1/R1b block (it drives the real listeners and the real timers).
+- Artifacts match the handoff exactly: `plugin.js b27f4c7a…9548a8`,
+  `smoke-render.mjs 2f3c6ebb…63518`, `test.cjs 35a7a5ce…0a09f`.
+- Live folder untouched, checked before and after: `~/.hermes/desktop-plugins/buzz-hive`
+  at `929548d4a512…` (baseline), `git status --porcelain` empty, no
+  `TEAM_WORKSPACE_*`/`smoke-render.mjs` present, `plugin.js` still
+  `b968e41284ac15c4f2c5ecc74c612bc4ba962148b1cdf7e0d564e4db90fad03d`.
+
+## F6 — pre-existing, out of this card's scope, reported not blocked
+
+`hiveStopMember` awaits `host.request('session.interrupt')` **before** its flush and
+`hiveFoldTurn`; if an `error` for that session arrives during that await, the turn is
+already closed as `error` when Stop resumes, and `hiveFoldTurn`'s no-open-turn
+fallback materializes a fresh empty `done` turn. Isolated evidence
+(`sentry-probe/stop-race.mjs`, clean boot, one scenario):
+**identical on `224efbc` and on `531c6e5`** — 2 rows → 3 rows, last row phase `done`.
+So it is not a regression from this rework and it is not one of the R1 items the card
+required; I report it for a future pass (the same family as R1: a turn resurrected by
+a late fold). A guard on the fold (skip when nothing was open and the reason for the
+fold was a user Stop) would close it.
+
+## Note on two claims in the record that I could not confirm
+
+- PROGRESS.md and the inline comment at `plugin.js:3736-3738` say the duplicate mounts
+  meant "the 5 s approval poll fired 3× per tick". What I *can* measure is the mounted
+  observer count: 3 while closed before, 2 now. The *poll* count is not 3× the tick —
+  all observers share one query key, so react-query serves one interval/fetch per key
+  — and I could not measure a live query client headlessly anyway. The observable
+  defect (duplicated subtrees, tripled hook work, 3 mounts) was real and is fixed; the
+  "3× poll" wording is unsupported.
+- The message.complete handler takes the reply body from the folded stream and never
+  consults `payload.text` (the contract's final-text field,
+  `gateway-contract.generated.ts:4798`). That is deliberate per the code comment
+  ("single source") and pre-existing; flagged as an observation only, not a finding.
+
+## What I still could not verify
+
+Unchanged from both earlier lists, and now with one addition of my own limits: real
+pixel layout inside the running Electron app (the R2 numbers come from a real engine
+with the real stylesheets, but a replica DOM, not the app's own tree); a live approvals
+poll against a real query client; an in-app Stop click (the ordering is asserted from
+source and driven headlessly, the click is not); light-theme repaint; a real
+disable→re-enable; other panes/plugins.
