@@ -87,3 +87,148 @@ cleanup on unload
 
 ALL PASS 51/51
 ```
+
+---
+
+# Phase 1 — SENTRY verification (2026-10-17)
+
+Independent verification of `d6d3a7a`→`531c6e5` on branch `team-studio`.
+I did not write this code. Every claim below was reproduced from scratch: the
+suite was re-run, the baseline was re-extracted from `02bff71` and re-run, and
+my own harness (`probe-sentry.mjs`, written by me, not a copy of
+`smoke-render.mjs`) drove the REAL `register(ctx)` listeners against the REAL
+`plugin.js` in a sandbox.
+
+**Verdict summary: FAIL — 1 regression, 1 layout defect, 3 further findings.**
+Phase 1 is not releasable as-is; the regression is a small, surgical fix.
+
+## Commands actually run
+
+```
+$ node test.cjs                 # in worktree/            → ALL PASS 283/283
+$ node smoke-render.mjs         # in worktree/            → ALL PASS 51/51
+$ node test.cjs                 # in a dir seeded with 02bff71:plugin.js +
+                                # 02bff71:test.cjs       → ALL PASS 193/193
+$ node probe-sentry.mjs         # SENTRY's own harness    → FAIL 6/15
+```
+
+The harness and its raw output are kept durably (outside the branch, next to
+`backups/`) at `~/Developer/hive-team-studio/sentry-probe/`:
+`probe-sentry.mjs`, `probe-sentry-output.txt`, `gw-probe.mjs`. Re-run with
+`node probe-sentry.mjs` (it reads `plugin.js` from the worktree by default).
+
+## Gate checks
+
+| Item | Verdict | Evidence |
+|------|---------|----------|
+| Live folder `~/.hermes/desktop-plugins/buzz-hive/` untouched | **PASS** | `git rev-parse HEAD` → `929548d4a512…` (= the documented baseline), `git status --porcelain` empty, `plugin.js` sha256 `b968e412…` mtime 16:15, no `TEAM_WORKSPACE_*`/`smoke-render.mjs` present in it |
+| `node test.cjs` green | **PASS** | `ALL PASS 283/283`, exit 0 |
+| Baseline count is real (not assumed) | **PASS** | re-ran the suite against `02bff71`'s `plugin.js`+`test.cjs` in a clean dir → `ALL PASS 193/193`; 193 + 90 new = 283 |
+| No test suppressed/skipped/deleted | **PASS** | `grep '\.skip\|it\.todo\|xit(\|xdescribe\|\.only' test.cjs` → no matches; `git diff 02bff71..HEAD -- test.cjs` removes exactly **2 lines**, both the single-line export-list string (`hiveClipHead` → the expanded list). No assertion removed |
+| Imports stay inside the allowed surface | **PASS** | `plugin.js:36-73` — `@hermes/plugin-sdk`, `react/jsx-runtime`, `react` only; no other import/require anywhere |
+| No invented API call | **PASS** | every door cross-checked against the installed v0.22.2 source, not against the docs: `projects.list` `methods_projects.py:81`, `projects.get:86`, `projects.set_active:117`, `projects.for_cwd:123`; `approval.pending` `methods_prompt.py:1238`, `approval.respond:1258`; `useQuery`/`queryClient` `sdk/index.ts:1975,2087`; `ctx.runAction('view.showFiles'\|'view.toggleReview')` both in the `PLUGIN_APP_ACTIONS` allow-list (`lib/keybinds/actions.ts:236,239`); `host.revealPane` (`sdk/index.ts:1451`) with pane ids `sessions/terminal/files/review/logs` all registered in `app/contrib/controller.tsx:194,233,255,273,628`; `ctx.os.writeClipboard` present on `PluginOs` |
+| Marker relay / state machine not rewritten | **PASS** | every hunk inside `hiveApplyWorkItems` is an added `cards.push(...)` plus the `return {…, cards}` change; `hivePlanDeliveries`, `hiveScrubMarkers`, `hiveParseWorkItems`, hop budget and fan-out cap are byte-identical to `02bff71` |
+| Injected CSS scoped + no colour literal | **PASS** | every selector in `HIVE_TS_CSS` (all 38 `.ts-` rules, media blocks included) starts `.ts-`; zero `#hex`/`rgb()`/`hsl()`; the 11 `--ui-*` names it reads are all defined by the app's `assets/index-B89n1Ils.css` and are theme-relative (`:root{--ui-bg-card:…=var(--ui-accent)/var(--theme-…)}`), so they repaint with `.dark` |
+| Unload cleanup complete | **PASS** | reproduced: after `onDispose` the style element is gone and `listeners.size === 0`; `hiveClearDeltas()` + `queryClient.removeQueries({queryKey:['buzz-hive']})` match the real keys (`['buzz-hive','approvals',key]`, `['buzz-hive','workflows']`); every `document.addEventListener` has a matching remover |
+| Icons referenced exist | **PASS** | all 18 `icons.*` names present in the SDK bundle **and** exported by `apps/desktop/src/lib/icons.ts` |
+| S3/S4 live re-verification | **NOT REPRODUCED** | I could not re-run FORGE's live probes: `curl http://127.0.0.1:57188/api/plugins/hermes-workflows/runs` → `401 Unauthorized`, and an unauthenticated `ws://127.0.0.1:57188/api/ws` → `403`. Confirmed at registration level only (row above). FORGE's quoted payloads remain FORGE's evidence, not mine |
+
+## Acceptance checklist (TEAM_WORKSPACE_DESIGN.md §10)
+
+| # | Verdict | Evidence |
+|---|---------|----------|
+| A1 three columns at 1440px | **PARTIAL** (runtime BLOCKED) | static: `.ts-workspace{grid-template-columns:240px minmax(420px,1fr) 320px}` + `grid-template-rows:44px …` + `height:100%;overflow:hidden` (`plugin.js:1935`); pixel/no-scrollbar behaviour needs the app |
+| A2 narrow fallbacks, all content reachable | **FAIL** | `.ts-sheet[data-open="true"]{display:block}` exists **only inside `@media (max-width:600px)`** (`plugin.js:1977`), while `.ts-right-body{display:none}` and `.ts-rail{display:flex}` apply from `≤1100px` (`:1965-1966`) and `.ts-team-body{display:none}` from `≤860px` (`:1970`). Between **601 px and 1100 px** the right column's tab bodies and the team column's row detail are `display:none`, the sheet cannot display, and `.ts-narrow-only` toolbar toggles are also hidden (`:1962,1976`). `TsRightRail.select()` (`:3620-3624`) sets `sheets.right = true` and nothing appears. DESIGN §1.3 ("at 1000px … its tabs open as an overlay") is unmet |
+| A3 light+dark, zero hardcoded colours | **PARTIAL** | no literal in the injected stylesheet (PASS, evidence above); but 3 live `var(--ui-danger, #e5484d)` / `var(--ui-warning, #f5a524)` fallbacks remain in reused components (`:2226`, `:2250`, `:2700`) and `--ui-danger`/`--ui-warning` do **not** exist in the app's CSS, so the hex is what renders — light-theme `#e5484d` vs the theme's `--ui-red:#cf2d56`. Light-theme repaint itself needs the app |
+| A4 live status across a real turn + error state | **FAIL** | **regression**, reproduced: `message.start` → `message.delta` → `error` within the 50 ms window leaves the member reading `answering…` with the stale text replayed onto a **new** turn, instead of `errored`. Details + fix below |
+| A5 §3.2 cards, markers never raw | **PASS** (headless) | my harness: `[task @builder]` → `data-ts-work="task"` card with an id; the raw marker string is absent from the rendered page; FORGE's 51-check harness covers done/review/verdict/scratchpad the same way |
+| A6 @-mention autocomplete + suppression rows | **BLOCKED** | needs a live composer; code path is pre-existing and unchanged |
+| A7 Tasks tab mirrors `$hiveTasks`; fail→OPEN on resubmission | **PASS** (with a doc erratum) | reproduced the full ladder: `[done]`→IN REVIEW, `[verdict fail]`→FAILED + "routed back to the owner", re-`[done]`→IN REVIEW. The status mapping is exactly `open/submitted/passed/failed` as §4.1:260-265 specifies. **§10 A7's clause "the row returns to OPEN on resubmission" contradicts §4.1** (which says re-`[done]` returns to `submitted` = IN REVIEW). The code follows §4.1; the A7 sentence is the defect |
+| A8 real pending approval + respond from the tab | **BLOCKED** | needs a live approval in the app; the degraded branch (`data-ts-approvals`, "Answer those in the native prompt") exists at `:3545` |
+| A9 Files/Workflow real data or degraded state | **PARTIAL** (runtime BLOCKED) | `data-ts-files="degraded"` / `data-ts-workflow="degraded"` branches present and reachable on error (`:3498-3510`, `:3583-3590`); the workflow route `/api/plugins/hermes-workflows/runs` exists (`plugins/hermes-workflows/dashboard/plugin_api.py:230`) but I could not re-run it live (401) |
+| A10 suite green | **PASS** | 283/283, baseline 193 reproduced, no suppression |
+| A11 existing comms unchanged | **PASS** | marker/hop/fan-out/scratchpad tests green; relay functions unchanged; timeline cap change `slice(-200)`→`hiveCapTimeline(...)` (200→500 in memory, 120 persisted) is the documented §8.2 value |
+| A12 console clean, no duplicate rows after re-enable | **PARTIAL** | dispose removes subscriptions + style (reproduced); duplicate-row check needs the app. `console.log` on every turn start/complete is pre-existing noise (`:3770,3828`) |
+| A13 other plugins/panes unaffected | **BLOCKED** | static evidence only: one `<style id="buzz-hive-team-studio">`, every selector `.ts-`-prefixed, removed on dispose |
+| S1–S6 | **PARTIAL** | S6 (var list/components) independently re-checked against the installed bundle/CSS and holds; S3/S4/S5 asked to be live-verified and I could not re-run them (401/403 above) |
+
+## Findings (severity order)
+
+**R1 — REGRESSION, blocking. A buffered delta resurrects a turn that already
+ended.** `hiveFlushDelta` (`plugin.js:2050-2060`) has no "is this turn still
+open" guard, and `hiveAppendTurnText` (`:1505-1514`) *opens a new turn* when
+none is open. `hiveTurnFail` (`:1549-1560`) closes the turn without flushing or
+dropping the buffer, so a delta still inside the 50 ms window lands 50 ms later
+on a brand-new turn. Reproduced (`probe-sentry.mjs`):
+
+```
+[A4] error inside the 50ms delta window
+  PASS  immediately after error the member reads errored
+  FAIL  the member STILL reads errored 50ms later   → status labels present after flush: answering…
+  FAIL  the failed turn was not reopened as a new streaming turn — {"answering":true}
+  FAIL  the stale streamed text did not get replayed onto a new turn
+```
+
+Same root cause on two more non-`message.complete` turn endings:
+`hiveStopMember` folds without flushing (`:1802`) — Stop is an A4 user action —
+and the `assistant.completed` fallback is bound without a flush (`:3831`).
+Fix (either, both are one-liners): guard the flush and flush on close.
+
+```js
+// plugin.js:2056 — after `const member = hiveMemberBySession(sessionId)`
+if (hiveOpenTurnIndex(member) === -1) return   // the turn already ended: drop stale text
+```
+and add `hiveFlushDelta(member.sessionId)` before `hiveTurnFold`/`hiveTurnError`
+in `hiveTurnFail:1549`, `hiveStopMember:1802`, `hiveFoldTurn:1533`.
+
+**R2 — Layout defect. Right/team panel content unreachable between 601 px and
+1100 px.** `plugin.js:1977` vs `:1965-1970`, `:1962`. Fix: move
+`.ts-sheet[data-open="true"]{display:block}` and `.ts-narrow-only{display:inline-flex}`
+out of the `max-width:600px` block into the `max-width:1100px` block (the 600 px
+rules can stay as a duplicate for the single-column case).
+
+**F1 — `TsSheet` mounts its children even when closed → every right/team panel
+is mounted twice.** `plugin.js:3721-3722`. `renderToString` shows
+`data-ts-right="true"` ×2 and `data-ts-team="true"` ×2. Because
+`hiveUseApprovals` is called from `TsApprovalsBadge` (`:3111`) *and* both
+`TsRightPanel` copies (`:3638`), three observers share
+`['buzz-hive','approvals',key]`; in `@tanstack/query-core@5.101.2`
+`#refetchIntervalId` is per-observer (`queryObserver.js:214`), so the 5 s poll
+is issued 3× per tick instead of once. Fix: `{open && jsx(TsSheet, …)}` /
+lazily render sheet content.
+
+**F2 — three live hardcoded colour fallbacks survive the "removed the dead
+`--ui-danger`/`--ui-warning`" claim.** `:2226`, `:2250` (HiveTurnRow error,
+reachable through `TsCard`) and `:2700` (HiveWorkBoard, reachable via the
+scratch view) still use `var(--ui-danger, #e5484d)` /
+`var(--ui-warning, #f5a524)`; both vars are undefined in the app stylesheet, so
+the hex renders. The new `hiveTaskStatusTone` correctly uses
+`--ui-red/--ui-yellow/--ui-green`, so the same FAILED item is `#e5484d` in the
+Work board and `#cf2d56` in the Tasks tab. Fix: use the real vars in all three
+places. `PROGRESS.md` should be corrected: only **1** of the 4 baseline
+occurrences disappeared, and only because `HiveRosterChip` was deleted.
+
+**F3 — the real `error` reason never reaches the UI (pre-existing).**
+`:3818` reads `e.error.message` / `e.payload.error`; the gateway's `ErrorPayload`
+is `{message}` (`tui_gateway/contracts/events.py:112`, mirrored as
+`GatewayEvent.payload` in `apps/shared/src/gateway-events.ts:46`), so every
+error card says the literal `turn failed`. `smoke-render.mjs:372` passes
+`error: {message:'boom'}`, a shape the gateway never emits — that is why the
+harness cannot see it. Fix: `(e.payload && e.payload.message) || (e.error && e.error.message) || 'turn failed'`.
+
+**F4 — minor.** `hiveCardTitle` (`:1175`) is newly added and referenced only by
+`test.cjs`; `title` attributes are used instead. Also, A7's sentence in
+TEAM_WORKSPACE_DESIGN.md §10 should be corrected to "returns to IN REVIEW"
+(it already contradicts §4.1:265).
+
+## What I could NOT verify (stated plainly)
+
+In-app runtime behaviour — A1 pixels, A3 light-theme repaint, A4 Stop against a
+real session, A6, A8, A9 under a real failure, A12's disable→re-enable
+duplicate-row check, A13 — plus a live re-run of S3/S4/S5. `smoke-render.mjs`
+applies no CSS layout, opens no pane and stubs `host.request`; and the task
+reserves a worktree-sourced live reload to ATLAS/the human, so I did not touch
+the live plugin folder or the app. Those rows are marked BLOCKED above with the
+reason. Nothing in this report is based on the author's prose: every PASS rests
+on a command I ran, and every FAIL is reproduced above.
+
