@@ -47,3 +47,28 @@
    (only this file + ARCHITECTURE.md changed).
 6. Next: Phase 1 UI/UX design spec (board task t_1e021903) reads
    ARCHITECTURE.md §3-§4 as its constraint set.
+
+## 2026-10-17 — Phase 1 design spec complete (ARCH)
+
+1. Wrote `TEAM_WORKSPACE_DESIGN.md`: all 10 required sections — three-column
+   layout w/ media-query narrow fallbacks, Team panel with derived (never
+   stored) member status, conversation timeline with normative event→card
+   mapping table, right-panel tabs (Tasks/Activity/Files/Approvals/Workflow),
+   toolbar, link-only bottom dock, theme-var visual design, state model with
+   delta batching + unload cleanup, component tree, and a 13-item acceptance
+   checklist (A1-A13) plus 6 spike gates (S1-S6).
+2. Constraint discipline: every dependency is VERIFIED per ARCHITECTURE.md §4;
+   PLAUSIBLE-NEEDS-TEST items (projects.*, approval.*, workflows REST via
+   bridge, clipboard, SDK var list) are spike-gated with documented degraded
+   states, never invented APIs. Spot-re-verified audit citations against
+   plugin.js (atoms, hive.v2, marker fns, HIVE_MAX_HOPS, CORE slice markers,
+   ROUTES_AREA, onDispose, work-item state machine statuses open/submitted/
+   passed/failed at plugin.js:561-626).
+3. Honest gaps recorded in the spec: native kanban board UI (UNSUPPORTED
+   direct — agent-relay only), live approval push (app-owned), pause/resume
+   (no RPC), embedded terminal/git view (native panes own), per-project
+   history (Phase 2 namespacing).
+4. Tests untouched and still green: `node test.cjs` → 193/193 PASS (docs-only
+   change). Live plugin folder untouched.
+5. Next: FORGE implements per spec (board task t_a7898aa3); SENTRY verifies
+   against A1-A13.
