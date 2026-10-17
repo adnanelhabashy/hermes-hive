@@ -553,3 +553,131 @@ HEAD` → `929548d4a512c3072e0093b4401ecf903397b057` (= baseline).
 Everything in the earlier "Left to SENTRY" list, plus: the in-app confirmation
 that a real Hermes window at 700 px and 1000 px shows a populated Work sheet and
 a populated Team sheet (the probe measures a replica DOM, not the app).
+
+## 2026-10-18 — Phase 2 design: project workspaces (ARCH, board task `t_bde0e382`)
+
+Deliverable: `TEAM_WORKSPACE_DESIGN-P2.md`. Design only — **no product file was
+touched** (`plugin.js`, `test.cjs`, `smoke-render.mjs`, `css-layout-probe.cjs`
+are byte-identical to `83f1cfd`; verified by hash below). The live folder
+`~/.hermes/desktop-plugins/buzz-hive/` was not opened.
+
+### What Phase 2 will be, in one paragraph
+
+One visible Project Selector, and per-project isolation of room state: the
+timeline, scratchpad, mission and work items move into a per-project key
+(`hive.v3:room:<projectId>`, plus `hive.v3:room:none` for the projectless room
+that preserves today's behavior), the roster and presentation prefs stay global
+(`hive.v3:global`), and a member's session binding becomes per-project because a
+session is cwd-bound. The v2 blob is migrated once, losslessly, reversibly and
+idempotently, and is left in place as the rollback snapshot.
+
+### Evidence labels used
+
+VERIFIED (source read + live-probed where stated) / PLAUSIBLE-NEEDS-TEST /
+UNSUPPORTED / NEEDS-SPIKE. Every design decision in the doc carries one.
+
+### Live probes run for this design (raw JSON in `p2-spike-raw.json`, method in the doc's Evidence section)
+
+Standalone JSON-RPC over the running desktop gateway's `/api/ws` with the
+loopback session token — the same surface `host.request` forwards to — plus HTTP
+for the REST routes. Read-only, except two disclosed empty session drafts on
+profile `arch` (`session.create` with no prompt ⇒ no DB row,
+`methods_session.py:445-447`). No project was created, selected, modified or
+deleted.
+
+1. **F1 is confirmed live, not just by reading.** `session.info` →
+   `{"code":-32601,"message":"unknown method: session.info …"}`. It is an event,
+   never a method. And a prompt needs a LIVE id: `_sess_nowait`
+   (`tui_gateway/server.py:1228-1243`) rejects a stored key with 4001 and logs
+   "client should resume the stored session" — so today every hydrated member is
+   stranded until the user throws its transcript away via "Fresh context".
+2. **The reattach map exists and is one call.** `session.active_list` rows carry
+   BOTH ids (`{id: <live>, session_key: <stored>, status, title, …}`,
+   `server.py:3058-3079`); after two `session.create` calls the new drafts
+   appeared with `session_key` equal to their `stored_session_id`.
+   `session.resume { session_id, profile, lazy: true, omit_messages: true }` is
+   the on-demand fallback, and a live reattach ATTACHES a viewer rather than
+   stealing the app's slot (`methods_session.py:868-873`,
+   `session_lifecycle.py:830-848`).
+3. **cwd adoption is observable and silently falls back.** `session.create` with
+   an existing directory → `info.cwd` is that directory verbatim; with a
+   non-existent one → `info.cwd = "/Users/adnan"` (the launch dir) with **no
+   error**. That single fact is why the design verifies the directory itself and
+   then reports the ADOPTED cwd rather than the requested one.
+4. **A directory probe IS reachable from the plugin.** `GET /api/fs/list?path=`
+   → `200 {"entries":[…]}` for an existing dir and
+   `200 {"entries":[],"error":"ENOENT"}` for a missing one;
+   `GET /api/fs/git-root?path=` → `{"root":…}`. Both reproduced live over HTTP
+   with the loopback token. The bridge hop inside the renderer is the one
+   unproven half → spike S7 (with a documented degraded path).
+5. **`ctx.storage` is localStorage, and its writes can fail silently.**
+   `createPluginStorage` scopes keys to `hermes.plugin.<id>.<key>`
+   (`apps/desktop/src/contrib/plugin.ts:196-216`) and `writeKey` swallows
+   quota/permission errors (`apps/desktop/src/lib/storage.ts:47-55`). The design
+   therefore verifies room writes by read-back + checksum instead of trusting
+   `set`. The live room key was observed as
+   `hermes.plugin.buzz-hive.hive.v2` in the Electron `Local Storage/leveldb`.
+6. `projects.list` returns real rows (`id/slug/name/board_slug/primary_path/
+   folders[{path,is_primary}]`, plus `active_id`), and `projects.for_cwd` on a
+   non-project folder returns `{project:null, cwd, branch}` — so "this folder is
+   not a project (yet)" is a real, cheap state, not a guess.
+
+### Decisions worth flagging to the human
+
+1. **A plain folder becomes a Hermes Project** (via `projects.create`), rather
+   than "run projectless with just a cwd". Isolation needs an immutable id; a
+   bare path has no stable identity and would be a second project list, which
+   PLAN/ARCHITECTURE forbid. The tradeoff (the plugin writes to the user's
+   project list) is stated in the spec, mitigated by an explicit confirm sheet,
+   and the genuinely projectless need is still served by the "No project" room.
+2. **The key prefix deviates from the card's sketch**: `hive.v3:room:<projectId>`
+   instead of `hive.v3:<projectId>`, so the reserved global keys
+   (`schema`/`index`/`global`) can never collide with a project key and the whole
+   key space fits one testable regex.
+3. **`cwd_explicit: true` is sent only after our own existence check passes.**
+   The host adopts an explicit pick outright (`session_workdir.py:246-251`), so
+   sending it blind could stamp a workspace that does not exist.
+4. **No automatic room pruning.** Storage growth is handled with a visible size
+   warning and an explicit "Clear this project's room" action — an automatic
+   prune is one wrong guess away from destroying a history.
+5. **The plugin never calls `session.cwd.set`.** The host refuses it on a running
+   session anyway (`4009 session busy`, `methods_session.py:1086-1089`); a
+   member's directory is fixed at mint and re-homing means a fresh session in the
+   target room.
+
+### Spike gates handed to FORGE (S7-S10)
+
+S7 bridge `/api/fs/list` from the plugin page; S8 reattach end-to-end after an
+app restart; S9 `projects.create` from plugin context (incl. the duplicate-path
+refusal `5063` and its re-resolve); S10 the storage ceiling with a synthetic
+full-size room. Each has a documented degraded state — none of them may turn
+into an invention.
+
+### Hand-back state
+
+Committed on branch `team-studio` (**no branch switch, no push**); the commit
+hash is recorded in the kanban handoff for `t_bde0e382`.
+
+```
+TEAM_WORKSPACE_DESIGN-P2.md   (new)
+TEAM_WORKSPACE_PROGRESS.md    (this entry)
+TEAM_WORKSPACE_PLAN.md        (Phase 2 row: NOT STARTED -> design DONE)
+plugin.js                     UNCHANGED  sha256 f63a52745edb455cd39d56b7c7aa2c667938f356441af213f146ddff5b79fb9e
+test.cjs                      UNCHANGED
+smoke-render.mjs              UNCHANGED
+```
+
+Suite state at hand-back (not a P2 claim — a baseline for FORGE):
+`node test.cjs` → **ALL PASS 292/292**; `node smoke-render.mjs` → **ALL PASS
+80/80**.
+
+Note: `TEAM_WORKSPACE_TESTS.md` has uncommitted Phase 1 runtime-verification
+content owned by board card `t_cd258c97` (a different, still-running card). It is
+deliberately NOT part of this commit.
+
+### Left to SENTRY (for the P2 build, Phase 3 of this lane)
+
+The 15-row checklist in `TEAM_WORKSPACE_DESIGN-P2.md` §11 (P2-A1…P2-A15), plus
+the three BLOCKED-tolerated rows B1-B3 with their stated reasons. The
+independent-reproduction duty: the T2-T9 isolation test must be re-run from the
+raw room keys (`hive.v3:*`), not from the UI's claims about them.

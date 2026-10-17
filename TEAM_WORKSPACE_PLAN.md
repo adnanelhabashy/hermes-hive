@@ -35,7 +35,7 @@ brief; this file is the executable roadmap.
 |---|-------|-------|--------|
 | 0 | Technical audit + architecture matrix | ARCH | DONE (c8c335e, spot-checked by ATLAS) |
 | 1 | Three-column UI rebuild (Team / Conversation / Tasks) | ARCH design → FORGE build → SENTRY verify | DONE — verdict PASS @ 2c5ae9a after 2 rework loops (R1 delta-resurrection, R2 sheet reachability, F1–F6 all verified fixed with measured evidence). Runtime-only items (A1/A3/A4/A6/A8/A9/A12/A13, live S3–S5) BLOCKED pending safe live surface (buzz-hive-dev proposal). Merge to live folder PENDING human approval — fast-forward `929548d..team-studio`, rollback = reset --hard 929548d + pre-team-studio backups. |
-| 2 | Real project workspaces (isolation, working dir) | FORGE → SENTRY | NOT STARTED |
+| 2 | Real project workspaces (isolation, working dir) | ARCH design → FORGE build → SENTRY verify | RUNNING — **design DONE** `TEAM_WORKSPACE_DESIGN-P2.md` (2026-10-18, task `t_bde0e382`); build NOT STARTED. Design handed FORGE spikes S7–S10; acceptance checklist = DESIGN-P2 §11 (P2-A1…P2-A15) |
 | 3 | ATLAS delegation protocol (real sessions, ≤2 concurrent) | FORGE → SENTRY | NOT STARTED |
 | 4 | Native Kanban adapter (durable task truth) | FORGE → SENTRY | NOT STARTED |
 | 5 | Git worktrees for concurrent coding | FORGE → SENTRY | NOT STARTED |
