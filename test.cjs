@@ -20,7 +20,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 // inside the CORE markers, so nothing here re-declares (and silently drifts
 // from) a real plugin value.
 const factory = new Function(
-  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas, hiveCardTitle, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
+  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas, hiveCardTitle, hiveOrderMembers, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
 )
 const {
   hiveParseCoordination,
@@ -85,6 +85,7 @@ const {
   hiveFilterCards,
   hiveBatchDeltas,
   hiveCardTitle,
+  hiveOrderMembers,
   HIVE_TIMELINE_MEM,
   HIVE_TIMELINE_KEEP,
   HIVE_PAYLOAD_MAX,
@@ -776,6 +777,21 @@ console.log('payload clipping + timeline caps')
   deep('a card title is a single line',
     hiveCardTitle({ kind: 'user', text: 'a\n\nb   c' }), 'a b c')
   deep('a card title is clipped', hiveCardTitle({ kind: 'user', text: 'x'.repeat(400) }).length, 121)
+}
+
+console.log('hiveOrderMembers (team panel order)')
+{
+  const room = [
+    { profile: 'sentry' }, { profile: 'forge' }, { profile: 'atlas', leader: true }, { profile: 'arch', browser: true }
+  ]
+  deep('leader and browser sort first, then alphabetical',
+    hiveOrderMembers(room).map((m) => m.profile), ['arch', 'atlas', 'forge', 'sentry'])
+  deep('the input array is not mutated',
+    hiveOrderMembers(room).length === 4 && room[0].profile, 'sentry')
+  deep('an empty roster is fine', hiveOrderMembers([]), [])
+  deep('a malformed entry cannot throw', hiveOrderMembers([null, { profile: 'b' }, undefined]).length, 3)
+  deep('ordering is team-agnostic (no name is special)',
+    hiveOrderMembers([{ profile: 'zed' }, { profile: 'aaa' }]).map((m) => m.profile), ['aaa', 'zed'])
 }
 
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))

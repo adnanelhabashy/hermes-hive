@@ -55,6 +55,11 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  useQuery,
+  queryClient,
   icons,
   cn,
   profileColor,
@@ -88,7 +93,8 @@ const HIVE_T = Object.freeze({
   xsRemoveMl: { fontSize: 10, lineHeight: '14px', marginLeft: 8 },
   sm: { fontSize: 11, lineHeight: '15px' },
   streamDots: { fontSize: 10, lineHeight: 0 },
-  wrap: { overflowWrap: 'anywhere', wordBreak: 'break-word' }
+  wrap: { overflowWrap: 'anywhere', wordBreak: 'break-word' },
+  xsWrapWide: { fontSize: 10, lineHeight: '14px', overflowWrap: 'anywhere', wordBreak: 'break-word' }
 })
 
 // ── reactive state ──────────────────────────────────────────────────────────
@@ -108,9 +114,10 @@ const $hiveMission = atom('')
 // so review is tracked as state the relay routes on.
 const $hiveTasks = atom([])
 const $hiveView = atom('timeline') // 'timeline' | 'scratch' | 'soul:<profile>'
-// Timeline presentation: 'flat' (chronological feed) | 'agents' (grouped,
-// per-agent collapsible sections). Expand/collapse is per-agent, persisted.
-const $hiveTimelineMode = atom('agents')
+// Timeline presentation: 'flat' (chronological feed — the Phase 1 default) |
+// 'agents' (grouped, per-agent collapsible sections). An existing room keeps
+// whatever it persisted; the toggle stays. Expand/collapse is per-agent.
+const $hiveTimelineMode = atom('flat')
 const $hiveAgentExpanded = atom({}) // { [profile]: true|false } — default collapsed
 // Attention chips: last time a group was expanded, per profile (unseen counting).
 const $hiveGroupSeen = atom({}) // { [profile]: ts }
@@ -132,8 +139,37 @@ const _hiveProcessed = new Map()
 // Profiles whose next turn is the seeded room brief ack (suppressed from TL).
 const _hiveSeeded = new Map()
 
+// ── Phase 1 (Team Studio) workspace state ───────────────────────────────────
+// All plugin-local. Persisted keys ride in the SAME `hive.v2` blob (adding keys
+// is backward compatible; hiveBootHydrate null-defaults them).
+const $tsActiveProject = atom(null) // { id, slug, name, primaryPath, branch } | null
+const $tsProjectList = atom(null) // last projects.list rows (null = not loaded)
+const $tsProjectError = atom('') // last projects.* failure ('' = fine)
+const $tsRightTab = atom('tasks') // tasks | activity | files | approvals | workflow
+const $tsAgentSelected = atom(null) // member profile | null (not persisted)
+// The left panel's per-agent accordion. Deliberately NOT $hiveAgentExpanded:
+// that atom drives the grouped TIMELINE's per-agent sections, and conflating
+// the two would change proven timeline behavior.
+const $tsAgentExpanded = atom({}) // { [profile]: true }
+const $tsDockOpen = atom(false) // bottom dock expanded?
+const $tsTeams = atom([]) // roster presets [{ name, members: [{ profile, contextMode, model, provider }] }]
+const $tsSheets = atom({ team: false, right: false }) // <600px overlay sheets
+const TS_RIGHT_TABS = Object.freeze([
+  { id: 'tasks', label: 'Tasks' },
+  { id: 'activity', label: 'Activity' },
+  { id: 'files', label: 'Files' },
+  { id: 'approvals', label: 'Approvals' },
+  { id: 'workflow', label: 'Workflow' }
+])
+const TS_APPROVAL_POLL_MS = 5000
+const TS_WORKFLOW_POLL_MS = 30000
+
 // module refs set in register()
 let hiveStorageRef = null
+let hiveCtxRef = null // register()'s ctx — scoped timers + the curated OS door
+let hiveStyleEl = null // the one injected <style>, removed on unload
+// Per-session delta coalescer: sessionId -> { text, count, dispose }.
+const _hiveDelta = new Map()
 
 // ── create-CORE-BEGIN (pure functions; sliced verbatim by test.cjs) ────────
 
@@ -1142,6 +1178,18 @@ function hiveCardTitle(entry) {
   return hiveTruncatePayload(String(entry.text || '').replace(/\s+/g, ' ').trim(), 120)
 }
 
+/** Team-panel order: leader/browser members first, then alphabetical. Pure.
+ *  ATLAS-on-top comes from the roster the user builds (leader flag), never
+ *  from hardcoding a name into the plugin — the room stays team-agnostic. */
+function hiveOrderMembers(members) {
+  return (members || []).slice().sort((a, b) => {
+    const ra = a && (a.leader === true || a.browser === true) ? 0 : 1
+    const rb = b && (b.leader === true || b.browser === true) ? 0 : 1
+    if (ra !== rb) return ra - rb
+    return String((a && a.profile) || '').localeCompare(String((b && b.profile) || ''))
+  })
+}
+
 // --CORE-END--
 
 // ── accents ─────────────────────────────────────────────────────────────────
@@ -1769,6 +1817,7 @@ async function hiveResetRoom() {
   _hiveProcessed.clear()
   _hiveSeeded.clear()
   _hiveHops.clear()
+  hiveClearDeltas()
   $hiveTimeline.set([])
   $hiveMembers.set([])
   $hiveTasks.set([])
@@ -1798,11 +1847,18 @@ function hivePersist() {
     tasks: $hiveTasks.get(),
     timelineMode: $hiveTimelineMode.get(),
     agentExpanded: $hiveAgentExpanded.get(),
+    // Phase 1 workspace prefs — new keys on the SAME blob (backward compatible).
+    rightTab: $tsRightTab.get(),
+    dockOpen: $tsDockOpen.get(),
+    agentDetailExpanded: $tsAgentExpanded.get(),
+    activeProject: $tsActiveProject.get(),
+    teams: $tsTeams.get(),
     members: $hiveMembers.get().map((m) => ({
       profile: m.profile,
       storedId: m.storedId,
       browser: m.browser,
       muted: m.muted,
+      leader: m.leader === true,
       contextMode: hiveNormalizeContextMode(m.contextMode),
       model: m.model || null,
       provider: m.provider || null,
@@ -1830,6 +1886,12 @@ async function hiveBootHydrate() {
   if (typeof saved.mission === 'string') $hiveMission.set(saved.mission)
   if (Array.isArray(saved.tasks)) $hiveTasks.set(saved.tasks.slice(-HIVE_TASK_KEEP))
   if (Array.isArray(saved.timeline)) $hiveTimeline.set(hiveCapTimeline(saved.timeline, HIVE_TIMELINE_KEEP))
+  // Phase 1 workspace prefs — absent keys keep their defaults (no migration).
+  if (typeof saved.rightTab === 'string' && TS_RIGHT_TABS.some((t) => t.id === saved.rightTab)) $tsRightTab.set(saved.rightTab)
+  if (typeof saved.dockOpen === 'boolean') $tsDockOpen.set(saved.dockOpen)
+  if (saved.agentDetailExpanded && typeof saved.agentDetailExpanded === 'object') $tsAgentExpanded.set(saved.agentDetailExpanded)
+  if (saved.activeProject && typeof saved.activeProject === 'object' && saved.activeProject.id) $tsActiveProject.set(saved.activeProject)
+  if (Array.isArray(saved.teams)) $tsTeams.set(saved.teams.filter((t) => t && typeof t.name === 'string'))
   const hydrated = []
   for (const m of saved.members) {
     const live = {
@@ -1837,6 +1899,7 @@ async function hiveBootHydrate() {
       storedId: m.storedId || null,
       browser: !!m.browser,
       muted: !!m.muted,
+      leader: m.leader === true,
       contextMode: hiveNormalizeContextMode(m.contextMode),
       status: 'idle',
       sessionId: null,
@@ -1860,6 +1923,160 @@ async function hiveBootHydrate() {
 }
 
 // ── UI ──────────────────────────────────────────────────────────────────────
+
+// ── Phase 1 workspace shell: styles, scope, timers ──────────────────────────
+// One injected <style>, every selector prefixed `.ts-` and nested under
+// `.ts-workspace`, colors only from the app's own theme vars (the canonical
+// `--ui-*` set enumerated from the SDK's styles.css — no invented var names, no
+// hex/rgb literals). Sizes are px/rem/fr: no JS resize math, no observers.
+
+const HIVE_TS_STYLE_ID = 'buzz-hive-team-studio'
+const HIVE_TS_CSS = `
+.ts-workspace{--ts-team-w:240px;--ts-right-w:320px;position:relative;display:grid;grid-template-columns:var(--ts-team-w) minmax(420px,1fr) var(--ts-right-w);grid-template-rows:44px minmax(0,1fr) auto;height:100%;min-height:0;min-width:0;overflow:hidden;background:var(--ui-surface-background);color:var(--ui-text-primary)}
+.ts-workspace *{box-sizing:border-box}
+.ts-toolbar{grid-column:1/-1;grid-row:1;display:flex;align-items:center;gap:.375rem;min-width:0;padding:0 .5rem;border-bottom:1px solid var(--ui-stroke-secondary);overflow:hidden}
+.ts-col{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.ts-col-team{grid-column:1;grid-row:2;border-right:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-secondary)}
+.ts-col-center{grid-column:2;grid-row:2}
+.ts-col-right{grid-column:3;grid-row:2;border-left:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-secondary)}
+.ts-dock{grid-column:1/-1;grid-row:3;display:flex;align-items:center;gap:.375rem;min-height:32px;padding:.25rem .5rem;border-top:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-secondary)}
+.ts-strip{display:flex;align-items:center;gap:.375rem;min-height:28px;padding:.25rem .5rem;border-bottom:1px solid var(--ui-stroke-secondary)}
+.ts-scroll{flex:1 1 auto;min-height:0}
+.ts-row{display:flex;align-items:flex-start;gap:.5rem;padding:.375rem .5rem;border-left:2px solid transparent;cursor:pointer;transition:background 120ms ease}
+.ts-row:hover{background:var(--ui-row-hover-background)}
+.ts-row[data-selected="true"]{background:var(--ui-row-active-background)}
+.ts-avatar{display:inline-flex;width:22px;height:22px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:4px;font-size:.6875rem;font-weight:600;line-height:1}
+.ts-card{border:1px solid var(--ui-stroke-secondary);border-radius:6px;background:var(--ui-bg-card);padding:.375rem .5rem}
+.ts-linkcard{display:inline-flex;align-items:center;padding:.125rem .375rem;border:1px solid var(--ui-stroke-secondary);border-radius:6px;background:var(--ui-bg-card);color:var(--ui-text-secondary);cursor:pointer;transition:background 120ms ease,color 120ms ease}
+.ts-linkcard:hover{background:var(--ui-row-hover-background);color:var(--ui-text-primary)}
+.ts-entrygroup{position:relative}
+.ts-entrygroup .ts-copy{position:absolute;top:2px;right:2px;opacity:0;transition:opacity 120ms ease}
+.ts-entrygroup:hover .ts-copy{opacity:1}
+.ts-sheet{display:none;position:absolute;top:44px;bottom:0;z-index:30;width:min(340px,80vw);overflow:auto;background:var(--ui-bg-elevated);border:1px solid var(--ui-stroke-secondary)}
+.ts-sheet[data-side="team"]{left:0}
+.ts-sheet[data-side="right"]{right:0}
+.ts-rail{display:none}
+.ts-railbutton{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:4px;color:var(--ui-text-secondary);cursor:pointer}
+.ts-railbutton:hover{background:var(--ui-control-hover-background);color:var(--ui-text-primary)}
+.ts-railbutton[data-active="true"]{background:var(--ui-control-active-background);color:var(--ui-text-primary)}
+.ts-narrow-only{display:none}
+@media (max-width:1100px){
+.ts-workspace{grid-template-columns:var(--ts-team-w) minmax(0,1fr) 48px}
+.ts-right-body{display:none}
+.ts-rail{display:flex;flex-direction:column;align-items:center;gap:.25rem;padding-top:.5rem}
+}
+@media (max-width:860px){
+.ts-workspace{grid-template-columns:56px minmax(0,1fr) 48px}
+.ts-team-body{display:none}
+}
+@media (max-width:600px){
+.ts-workspace{grid-template-columns:minmax(0,1fr)}
+.ts-col-team,.ts-col-right{display:none}
+.ts-col-center{grid-column:1}
+.ts-narrow-only{display:inline-flex}
+.ts-sheet[data-open="true"]{display:block}
+}`
+
+function hiveInjectStyles() {
+  if (hiveStyleEl || typeof document === 'undefined') return
+  const existing = document.getElementById(HIVE_TS_STYLE_ID)
+  if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
+  const el = document.createElement('style')
+  el.id = HIVE_TS_STYLE_ID
+  el.textContent = HIVE_TS_CSS
+  document.head.appendChild(el)
+  hiveStyleEl = el
+}
+
+function hiveRemoveStyles() {
+  if (hiveStyleEl && hiveStyleEl.parentNode) hiveStyleEl.parentNode.removeChild(hiveStyleEl)
+  hiveStyleEl = null
+  if (typeof document === 'undefined') return
+  const stray = document.getElementById(HIVE_TS_STYLE_ID)
+  if (stray && stray.parentNode) stray.parentNode.removeChild(stray)
+}
+
+/** Run `fn` after `ms`, through the plugin-scoped timer when the host offers
+ *  one, so nothing survives unload. Returns a canceller. */
+function hiveAfter(ms, fn) {
+  if (hiveCtxRef && typeof hiveCtxRef.setTimeout === 'function') return hiveCtxRef.setTimeout(fn, ms)
+  const t = setTimeout(fn, ms)
+  return () => clearTimeout(t)
+}
+
+/** Reveal a NATIVE pane by id. `host.navigate` is a ROUTE door and cannot do
+ *  this; `host.revealPane` is the SDK's pane door (feature-detected). */
+function hiveRevealPane(paneId) {
+  if (host && typeof host.revealPane === 'function') {
+    try { host.revealPane(paneId); return true } catch (err) { /* fall through */ }
+  }
+  host.notify({ kind: 'warning', message: `Hive: this desktop build has no pane-reveal door — open the ${paneId} pane from the tab strip.` })
+  return false
+}
+
+/** Run a built-in VIEW app action (the same handler its keybind uses). */
+function hiveRunAppAction(id) {
+  if (hiveCtxRef && typeof hiveCtxRef.runAction === 'function') {
+    const res = hiveCtxRef.runAction(id)
+    if (res && res.ok === false) host.notify({ kind: 'warning', message: `Hive: ${res.error || 'that action is unavailable in this build.'}` })
+    return res
+  }
+  host.notify({ kind: 'warning', message: 'Hive: this desktop build cannot run app actions.' })
+  return { ok: false, error: 'unsupported' }
+}
+
+async function hiveCopyText(text) {
+  const s = String(text == null ? '' : text)
+  if (!s.trim()) return false
+  try {
+    if (hiveCtxRef && hiveCtxRef.os && typeof hiveCtxRef.os.writeClipboard === 'function') {
+      return await hiveCtxRef.os.writeClipboard(s)
+    }
+  } catch { /* fall through to the renderer clipboard */ }
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(s)
+      return true
+    }
+  } catch { /* nothing else to try */ }
+  return false
+}
+
+// ── delta coalescing (the one new timer) ────────────────────────────────────
+// message.delta is high-frequency; batches land in the open bubble at most
+// every HIVE_DELTA_WINDOW_MS. ONE buffered flush per session, cancelled on
+// fold, reset and unload. The accumulation rules live in the pure reducer.
+
+function hiveFlushDelta(sessionId) {
+  const cur = _hiveDelta.get(sessionId)
+  if (!cur) return
+  _hiveDelta.delete(sessionId)
+  if (cur.dispose) { try { cur.dispose() } catch { /* already fired */ } }
+  if (!cur.text) return
+  const member = hiveMemberBySession(sessionId)
+  if (!member) return
+  hiveAppendTurnText(member, cur.text)
+  hiveMarkStatus(sessionId, 'streaming')
+}
+
+function hiveQueueDelta(member, chunk) {
+  if (!member || !member.sessionId) return
+  const sid = member.sessionId
+  const cur = _hiveDelta.get(sid) || { text: '', count: 0, dispose: null }
+  const batched = hiveBatchDeltas(cur, chunk)
+  cur.text = batched.text
+  cur.count = batched.count
+  if (!cur.dispose) cur.dispose = hiveAfter(HIVE_DELTA_WINDOW_MS, () => hiveFlushDelta(sid))
+  _hiveDelta.set(sid, cur)
+}
+
+function hiveClearDeltas() {
+  for (const sid of [..._hiveDelta.keys()]) {
+    const cur = _hiveDelta.get(sid)
+    if (cur && cur.dispose) { try { cur.dispose() } catch { /* noop */ } }
+    _hiveDelta.delete(sid)
+  }
+}
 
 /** Low-profile per-member model selector. Lists the LIVE model catalog
  *  (all configured providers/models, grouped by provider) PLUS the curated
@@ -1932,73 +2149,6 @@ function HiveContextModeControl({ m }) {
     }),
     jsx('div', { className: 'px-2 text-muted-foreground', style: HIVE_T.xs, children: mode === 'minimal' ? 'Direct handoff only; no automatic digest or scratchpad.' : 'Room digest + shared scratchpad on direct deliveries.' })
   ] }) })
-}
-
-function HiveRosterChip({ m }) {
-  const { color, soft } = hiveAccent(m.profile)
-  const sessionRef = m.storedId || m.sessionId || undefined
-  // Phase glyph + tone — honest status vocabulary (SPEC B3): queued clock,
-  // thinking dots, tooling gear, streaming pulse, error cross, done check.
-  const phase = m.status
-  const glyph =
-    phase === 'queued' ? '⏳'
-    : phase === 'thinking' ? '···'
-    : phase === 'tool' ? '⚙'
-    : phase === 'streaming' ? '…'
-    : phase === 'error' ? '✕'
-    : phase === 'done' ? '✓'
-    : ''
-  const glyphPulse = phase === 'thinking' || phase === 'tool' || phase === 'streaming'
-  const glyphTone = phase === 'error' ? { color: 'var(--ui-danger, #e5484d)' } : phase === 'done' ? HIVE_T.xs : HIVE_T.streamDots
-  const statusLabel =
-    phase === 'queued' ? 'queued behind current turn'
-    : phase === 'thinking' ? 'thinking…'
-    : phase === 'tool' ? 'using a tool…'
-    : phase === 'streaming' ? 'answering…'
-    : phase === 'error' ? 'errored'
-    : phase === 'done' ? 'done'
-    : 'idle'
-  return jsx(DropdownMenu, {
-    children: [
-      jsx(DropdownMenuTrigger, {
-        asChild: true,
-        children: jsx('div', {
-          'data-role': 'member',
-          style: { borderColor: color, background: soft },
-          title: `${m.muted ? '(muted) ' : ''}@${m.profile} · ${statusLabel} · session ${sessionRef || 'pending'}`,
-          className: cn(
-            'flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 text-xs select-none',
-            m.browser && 'ring-1',
-            m.muted && 'opacity-60'
-          ),
-          children: [
-            jsx('span', { className: 'rounded-full', style: { ...HIVE_T.dot, background: color } }),
-            jsx('span', { style: { color }, className: 'font-medium', children: '@' + m.profile }),
-            m.browser && jsx(icons.Globe, { size: 12, style: { color } }),
-            m.muted && jsx('span', { className: 'uppercase tracking-wide text-muted-foreground', style: HIVE_T.xs, children: 'muted' }),
-            jsx('span', { className: 'uppercase tracking-wide text-muted-foreground', style: HIVE_T.xs, children: hiveNormalizeContextMode(m.contextMode) === 'minimal' ? 'minimal' : 'standard' }),
-            m.modelLabel && jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, title: m.modelLabel, children: m.modelLabel }),
-            glyph && jsx('span', { className: cn(glyphPulse && 'animate-pulse'), style: { ...glyphTone, fontSize: 10 }, children: glyph })
-          ]
-        })
-      }),
-      jsx(DropdownMenuContent, {
-        align: 'start',
-        children: [
-          sessionRef && jsx(DropdownMenuItem, { onSelect: () => host.navigate('/' + encodeURIComponent(sessionRef)), children: jsxs('span', { children: ['Open session', jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xsRemoveMl, children: sessionRef.slice(0, 12) + '…' })] }) }),
-          m.status !== 'idle' && jsx(DropdownMenuItem, { onSelect: () => void hiveStopMember(m.profile), children: 'Stop (interrupt)' }),
-          jsx(DropdownMenuItem, { onSelect: () => { $hiveView.set('soul:' + m.profile); haptic('tap') }, children: 'Edit SOUL / persona' }),
-          jsx(DropdownMenuItem, { onSelect: () => void hiveToggleMute(m.profile), children: m.muted ? 'Unmute' : 'Mute' }),
-          jsx(DropdownMenuItem, { onSelect: () => void hiveSetBrowser(m.profile, !m.browser), children: m.browser ? 'Release browser control' : 'Grant browser control' }),
-          jsx(HiveContextModeControl, { m }),
-          jsx(HiveModelSubmenu, { m }),
-          jsx(DropdownMenuItem, { onSelect: () => void hiveFreshContext(m.profile), children: 'Fresh context (new session)' }),
-          jsx(DropdownMenuSeparator, {}),
-          jsx(DropdownMenuItem, { variant: 'destructive', onSelect: () => void hiveRemoveMember(m.profile), children: 'Remove from room' })
-        ]
-      })
-    ]
-  })
 }
 
 async function hiveToggleMute(profile) {
@@ -2239,55 +2389,28 @@ function HiveGroupedTimeline() {
   ] })
 }
 
-/** Flat chronological feed — turn entries render as inline activity spines. */
-function HiveTimeline() {
-  const timeline = useValue($hiveTimeline)
-  const ref = useRef(null)
-  const follow = hiveUseFollowScroll(ref, timeline)
-  return jsx('div', { className: 'relative h-full grow min-h-0', children: [
-    jsx(ScrollArea, {
-      ref, className: 'h-full grow min-h-0', onScroll: follow.onScroll,
-      children: jsx('div', {
-        className: 'flex flex-col gap-1 p-2',
-        'data-hive-timeline': true,
-        children: timeline.length
-          ? timeline.map((m) => m.kind === 'turn' ? jsx(HiveTurnRow, { key: m.id, turn: m }) : jsx(HiveMemberTone, { key: m.id, m }))
-          : [jsx('div', { key: 'empty', className: 'p-6 text-center text-xs text-muted-foreground', children: 'No activity yet. Message @default or add agents to start the crew.' })]
-      })
-    }),
-    !follow.pinned && jsx(Button, {
-      size: 'sm', variant: 'outline',
-      onClick: follow.jump,
-      className: 'absolute bottom-3 right-3 z-10 shadow',
-      children: '↓ latest'
-    })
-  ] })
-}
-
-/** Slim toggle between the flat feed and grouped-by-agent expandable view. */
-function HiveTimelineModeToggle() {
+/** Slim toggle between the flat feed and grouped-by-agent expandable view.
+ *  `right` carries extra header content (the feed filter) without another row. */
+function HiveTimelineModeToggle({ right }) {
   const mode = useValue($hiveTimelineMode)
   return jsx('div', {
     className: 'flex items-center justify-between gap-2 border-b px-2 py-1',
     'data-hive-mode-toggle': true,
     children: [
-      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Work' }),
-      jsx(SegmentedControl, {
-        options: [
-          { id: 'agents', label: 'By agent' },
-          { id: 'flat', label: 'Feed' }
-        ],
-        value: mode,
-        onChange: (v) => { $hiveTimelineMode.set(v === 'agents' ? 'agents' : 'flat'); hivePersist() }
-      })
+      jsxs('span', { className: 'flex items-center gap-2', children: [
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Work' }),
+        jsx(SegmentedControl, {
+          options: [
+            { id: 'agents', label: 'By agent' },
+            { id: 'flat', label: 'Feed' }
+          ],
+          value: mode,
+          onChange: (v) => { $hiveTimelineMode.set(v === 'agents' ? 'agents' : 'flat'); hivePersist() }
+        })
+      ] }),
+      right || null
     ]
   })
-}
-
-/** Renders the active timeline presentation (grouped or flat). */
-function HiveTimelineBody() {
-  const mode = useValue($hiveTimelineMode)
-  return mode === 'agents' ? jsx(HiveGroupedTimeline, {}) : jsx(HiveTimeline, {})
 }
 
 /** Coordination grammar shortcuts — the bracket syntax agents actually speak
@@ -2302,6 +2425,8 @@ function HiveComposer() {
   const composer = useValue($hiveComposer)
   const members = useValue($hiveMembers)
   const open = useValue($hiveMentionOpen)
+  const selectedAgent = useValue($tsAgentSelected)
+  const timeline = useValue($hiveTimeline)
   const ref = useRef(null)
   const [active, setActive] = useState(0)
   const q = open.toLowerCase()
@@ -2309,6 +2434,15 @@ function HiveComposer() {
     if (!open) return []
     return members.map((m) => '@' + m.profile).concat(['@you']).filter((n) => n.toLowerCase().includes(q)).slice(0, 6)
   }, [open, members])
+  // The member a Stop would interrupt: the selected one when it is mid-turn,
+  // else the first member that is. Derived, so it can never point at a member
+  // that is already idle.
+  const stopTarget = useMemo(() => {
+    const busy = members.filter((m) => hiveStatusBusy(hiveMemberStatus(m, timeline)))
+    if (!busy.length) return null
+    const sel = hiveNormalize(selectedAgent || '')
+    return busy.find((m) => hiveNormalize(m.profile) === sel) || busy[0]
+  }, [members, timeline, selectedAgent])
 
   const send = (text) => {
     if (!text.trim()) return
@@ -2410,7 +2544,19 @@ function HiveComposer() {
       }),
       jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
         jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Enter ↵ send · Shift+↵ newline · @ tag · ↑↓ pick' }),
-        jsx(Button, { onClick: () => send(composer), disabled: !composer.trim(), size: 'sm', children: jsxs('span', { children: ['Send ', jsx(icons.Send, { size: 12, className: 'inline' })] }) })
+        jsxs('div', { className: 'flex items-center gap-1.5', children: [
+          // Stop the member that is actually mid-turn (§3.3) — the verified
+          // session.interrupt path, aimed at the selected member when there is
+          // one, else the first busy member.
+          stopTarget
+            ? jsx(Button, {
+                variant: 'outline', size: 'sm', title: `Interrupt @${stopTarget.profile}`,
+                onClick: () => void hiveStopMember(stopTarget.profile),
+                children: jsxs('span', { className: 'flex items-center gap-1', children: [jsx(icons.StopFilled, { size: 11 }), `Stop @${stopTarget.profile}`] })
+              })
+            : null,
+          jsx(Button, { onClick: () => send(composer), disabled: !composer.trim(), size: 'sm', children: jsxs('span', { children: ['Send ', jsx(icons.Send, { size: 12, className: 'inline' })] }) })
+        ] })
       ] })
     ]
   })
@@ -2441,25 +2587,6 @@ function HiveResetButton() {
       ] }) }),
     jsx(Button, { variant: 'ghost', size: 'sm', title: 'Reset room', 'aria-label': 'Reset room', onClick: () => setConfirming((c) => !c), children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.Trash2, { size: 14 }), 'Reset'] }) })
   ] })
-}
-
-function HiveRoomMenu() {
-  const swarm = useValue($hiveSwarm)
-  return jsx(DropdownMenu, {
-    children: [
-      jsx(DropdownMenuTrigger, { asChild: true, children: jsx(Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Room settings', children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.SlidersHorizontal, { size: 14 }), 'Room settings'] }) }) }),
-      jsx(DropdownMenuContent, {
-        align: 'end',
-        children: [
-          jsx('div', { className: 'flex items-center justify-between gap-3 px-2.5 py-1.5', children: [
-            jsx('span', { className: 'text-xs', children: 'Agents talk to each other' }),
-            jsx(Switch, { checked: swarm, onCheckedChange: (v) => { $hiveSwarm.set(!!v); hivePersist() } })
-          ] }),
-          jsx('div', { className: 'px-2.5 pb-1 text-muted-foreground', style: HIVE_T.xs, children: swarm ? 'Relays between agents are injected live.' : 'Agents only reply to you — no inter-agent injection.' })
-        ]
-      })
-    ]
-  })
 }
 
 function HiveCreateForm({ onDone, onCancel }) {
@@ -2669,65 +2796,936 @@ function HiveSoulEditor({ profile }) {
 
 
 
-function HivePage() {
-  const members = useValue($hiveMembers)
+// ── Phase 1 workspace: project, presets, leader ─────────────────────────────
+
+/** Load projects.list once and reconcile the active project from cwd.
+ *  Registered RPC, smoke-tested live (see TEAM_WORKSPACE_PROGRESS.md §spikes).
+ *  Every failure lands in $tsProjectError so the toolbar shows an honest
+ *  degraded state instead of an empty dropdown. */
+async function hiveLoadProjects() {
+  try {
+    const res = await host.request('projects.list', {})
+    const list = (res && res.projects) || []
+    $tsProjectList.set(list)
+    $tsProjectError.set('')
+    if (!$tsActiveProject.get() && $hiveCwd.get()) {
+      const found = await host.request('projects.for_cwd', { cwd: $hiveCwd.get() })
+      const p = found && found.project
+      if (p) {
+        $tsActiveProject.set({
+          id: p.id, slug: p.slug, name: p.name || p.slug,
+          primaryPath: p.primary_path || '', branch: (found && found.branch) || ''
+        })
+        hivePersist()
+      }
+    }
+  } catch (err) {
+    $tsProjectList.set([])
+    $tsProjectError.set((err && err.message) || 'Projects unavailable')
+    console.warn('[buzz-hive] projects.list failed', err)
+  }
+}
+
+/** Select a project. Relabels the room and stamps cwd for FUTURE member
+ *  sessions only — per-project history is Phase 2 (ARCHITECTURE.md risk 5). */
+async function hiveSelectProject(project) {
+  if (!project) {
+    $tsActiveProject.set(null)
+    hivePersist()
+    return
+  }
+  const next = {
+    id: project.id, slug: project.slug, name: project.name || project.slug,
+    primaryPath: project.primary_path || '', branch: $tsActiveProject.get() ? ($tsActiveProject.get().branch || '') : ''
+  }
+  $tsActiveProject.set(next)
+  if (next.primaryPath) $hiveCwd.set(next.primaryPath)
+  hivePersist()
+  try {
+    const found = await host.request('projects.for_cwd', { cwd: next.primaryPath || '' })
+    if (found && found.branch && $tsActiveProject.get() && $tsActiveProject.get().id === next.id) {
+      $tsActiveProject.set({ ...$tsActiveProject.get(), branch: found.branch })
+      hivePersist()
+    }
+  } catch { /* branch is decoration; the selection already stands */ }
+  try {
+    await host.request('projects.set_active', { id: next.id })
+  } catch (err) {
+    host.notifyError(err, 'Hive: could not set the active project')
+  }
+  host.notify({ kind: 'success', message: `Hive: project → ${next.name}. New member sessions use its folder; history is per-room until Phase 2.` })
+}
+
+/** Mark/clear the room's leader flag (presentational ordering only). */
+function hiveSetLeader(profile) {
+  const key = hiveNormalize(profile)
+  const list = $hiveMembers.get()
+  const cur = list.find((m) => hiveNormalize(m.profile) === key)
+  const next = !(cur && cur.leader === true)
+  $hiveMembers.set(list.map((m) => (hiveNormalize(m.profile) === key ? { ...m, leader: next } : m)))
+  hivePersist()
+}
+
+/** Save the current roster as a preset (plugin-local, same hive.v2 blob). */
+function hiveSaveTeamPreset(name) {
+  const members = $hiveMembers.get().map((m) => ({
+    profile: m.profile,
+    contextMode: hiveNormalizeContextMode(m.contextMode),
+    model: m.model || null,
+    provider: m.provider || null
+  }))
+  const trimmed = String(name || '').trim() || `room-${($tsTeams.get().length || 0) + 1}`
+  const rest = $tsTeams.get().filter((t) => t && t.name !== trimmed)
+  $tsTeams.set([...rest, { name: trimmed, members }])
+  hivePersist()
+  host.notify({ kind: 'success', message: `Hive: preset "${trimmed}" saved (${members.length} members).` })
+}
+
+/** Apply a preset: mint the MISSING members through the existing mint path and
+ *  re-apply a saved model when it resolves to a real entry. Never removes
+ *  anyone — a preset adds a crew, it does not evict the current one. */
+async function hiveApplyTeamPreset(preset) {
+  const saved = (preset && preset.members) || []
+  let minted = 0
+  for (const s of saved) {
+    const key = hiveNormalize(s && s.profile)
+    if (!key) continue
+    if ($hiveMembers.get().some((m) => hiveNormalize(m.profile) === key)) continue
+    await hiveMintMember(key, { contextMode: s.contextMode })
+    minted++
+    const entry = s.model ? hiveResolveModelEntry(s.provider, s.model) : undefined
+    if (entry) {
+      try { await hiveSetMemberModel(key, entry) } catch (err) { host.notifyError(err, `Hive: preset model for @${key} failed`) }
+    }
+  }
+  host.notify({
+    kind: 'success',
+    message: `Hive: preset "${preset.name}" applied — ${minted} member(s) started.`
+  })
+}
+
+// ── approvals / workflow reads (React Query over the app's own client) ──────
+
+/** Per-member pending approvals, polled on the app's query client (one query
+ *  for the whole roster so the hook count never depends on the roster). Each
+ *  member's failure is captured INSIDE the payload, so one dead session can
+ *  never blank the tab or throw the query. */
+function hiveUseApprovals(members) {
+  const live = (members || []).filter((m) => m && m.sessionId)
+  const key = live.map((m) => `${m.profile}:${m.sessionId}`).join(',')
+  const query = useQuery({
+    queryKey: ['buzz-hive', 'approvals', key],
+    enabled: live.length > 0,
+    refetchInterval: TS_APPROVAL_POLL_MS,
+    queryFn: async () => {
+      const out = {}
+      for (const m of live) {
+        try {
+          const res = await host.request('approval.pending', { session_id: m.sessionId })
+          out[m.profile] = { sessionId: m.sessionId, pending: (res && res.approvals) || [], error: '' }
+        } catch (err) {
+          out[m.profile] = { sessionId: m.sessionId, pending: [], error: (err && (err.message || err.code)) || 'unavailable' }
+        }
+      }
+      return out
+    }
+  })
+  const byProfile = query.data || {}
+  let total = 0
+  for (const v of Object.values(byProfile)) total += (v.pending || []).length
+  const errored = Object.keys(byProfile).length > 0 && Object.values(byProfile).every((v) => !!v.error)
+  return { byProfile, total, errored, loading: query.isLoading }
+}
+
+async function hiveRespondApproval(member, requestId, choice) {
+  try {
+    await host.request('approval.respond', {
+      session_id: member.sessionId,
+      choice,
+      ...(requestId ? { request_id: requestId } : {})
+    })
+    host.notify({ kind: 'success', message: `Hive: @${member.profile} — "${choice}" recorded.` })
+    await queryClient.invalidateQueries({ queryKey: ['buzz-hive', 'approvals'] })
+  } catch (err) {
+    host.notifyError(err, `Hive: could not answer @${member.profile}'s approval`)
+  }
+}
+
+// ── shared bits ─────────────────────────────────────────────────────────────
+
+function TsStatusDot({ status }) {
+  return jsx(StatusDot, { tone: hiveStatusTone(status), title: hiveStatusLabel(status) })
+}
+
+function TsAgentAvatar({ profile }) {
+  const { color, soft } = hiveAccent(profile)
+  const initial = (String(profile || '?').trim()[0] || '?').toUpperCase()
+  return jsx('span', {
+    className: 'ts-avatar',
+    'data-accent': color,
+    style: { background: soft, border: `1px solid ${color}`, color },
+    children: initial
+  })
+}
+
+function TsCopyButton({ text }) {
+  const [copied, setCopied] = useState(false)
+  const copy = (ev) => {
+    if (ev && ev.stopPropagation) ev.stopPropagation()
+    void hiveCopyText(text).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      hiveAfter(1200, () => setCopied(false))
+    })
+  }
+  return jsx(Button, {
+    variant: 'ghost', size: 'icon-xs', className: 'ts-copy', title: 'Copy this message',
+    'aria-label': 'Copy message', onClick: copy,
+    children: jsx(icons.Copy, { size: 11, className: copied ? 'text-(--ui-green)' : undefined })
+  })
+}
+
+// ── toolbar ─────────────────────────────────────────────────────────────────
+
+function TsRoomTitle() {
   const title = useValue($hiveTitle)
-  const view = useValue($hiveView)
-  const [editingTitle, setEditingTitle] = useState(false)
-  const [titleDraft, setTitleDraft] = useState(title)
-  const busyCount = members.filter((m) => ['queued', 'thinking', 'tool', 'streaming'].includes(m.status)).length
-  const commitTitle = () => { if (titleDraft.trim()) { $hiveTitle.set(titleDraft.trim().slice(0, 40)); hivePersist() } setEditingTitle(false) }
-  const soulProfile = view.startsWith('soul:') ? view.slice(5) : null
-  return jsxs('main', {
-    'data-hive-page': true,
-    className: 'flex h-full min-h-0 min-w-0 flex-col',
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(title)
+  const commit = () => {
+    if (draft.trim()) { $hiveTitle.set(draft.trim().slice(0, 40)); hivePersist() }
+    setEditing(false)
+  }
+  if (editing) {
+    return jsx(Input, {
+      autoFocus: true, value: draft, className: 'h-6 w-36 text-xs',
+      onChange: (e) => setDraft(e.target.value),
+      onBlur: commit,
+      onKeyDown: (ev) => { if (ev.key === 'Enter') commit() }
+    })
+  }
+  return jsx(Badge, {
+    variant: 'muted', className: 'cursor-pointer',
+    title: 'Rename room', onClick: () => { setDraft(title); setEditing(true) },
+    children: title
+  })
+}
+
+function TsProjectSelect() {
+  const active = useValue($tsActiveProject)
+  const list = useValue($tsProjectList)
+  const err = useValue($tsProjectError)
+  const pick = (value) => {
+    if (value === 'none') { void hiveSelectProject(null); return }
+    const found = ($tsProjectList.get() || []).find((p) => 'p:' + p.id === value)
+    if (found) void hiveSelectProject(found)
+  }
+  return jsxs('div', {
+    className: 'flex min-w-0 items-center gap-1.5',
+    'data-ts-project': true,
+    title: 'Switching project relabels the room and sets the folder for FUTURE member sessions. Conversation history is per-room until the Phase 2 namespacing migration.',
     children: [
-      jsxs('header', { className: 'flex flex-wrap items-center justify-between gap-3 border-b px-6 py-4', children: [
-        jsxs('div', { className: 'min-w-0', children: [
-          jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-            jsx('h1', { className: 'text-lg font-semibold', children: 'Hive' }),
-            editingTitle
-              ? jsx(Input, { autoFocus: true, value: titleDraft, className: 'h-7 w-40 text-sm', onChange: (e) => setTitleDraft(e.target.value), onBlur: commitTitle, onKeyDown: (ev) => { if (ev.key === 'Enter') commitTitle() } })
-              : jsx(Badge, { variant: 'secondary', className: 'cursor-pointer', onClick: () => { setTitleDraft(title); setEditingTitle(true) }, title: 'Rename room', children: title }),
-            jsx(Badge, { variant: busyCount > 0 ? 'default' : 'outline', children: busyCount > 0 ? `${busyCount} active` : 'ready' })
-          ] }),
-          jsx('p', { className: 'mt-1 max-w-3xl text-sm text-muted-foreground', style: HIVE_T.wrap, children: 'Live agent room — coordinate work, inspect tool activity, and act on any member.' })
-        ] }),
-        jsxs('div', { className: 'flex flex-wrap items-center gap-1.5', children: [
-          jsx(Button, { variant: view === 'scratch' ? 'default' : 'ghost', size: 'sm', onClick: () => $hiveView.set(view === 'scratch' ? 'timeline' : 'scratch'), title: 'Shared team scratchpad', children: jsxs('span', { className: 'flex items-center gap-1.5', children: ['📝', 'Scratchpad'] }) }),
-          jsx(HiveAddMember, {}),
-          jsx(HiveResetButton, {}),
-          jsx(HiveRoomMenu, {})
-        ] })
-      ] }),
-      jsxs('section', { className: 'border-b px-6 py-3', 'data-hive-roster': true, children: [
-        jsxs('div', { className: 'flex flex-wrap items-center justify-between gap-2', children: [
-          jsx('span', { className: 'text-xs font-semibold uppercase tracking-wide text-muted-foreground', children: 'Crew' }),
-          jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `${members.length + 1}/11 members · click a member for actions` })
-        ] }),
-        jsx('div', { className: 'mt-2 flex max-h-48 flex-wrap content-start gap-1.5 overflow-auto', children: [
-          jsx('div', { className: 'flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs select-none opacity-90', 'data-role': 'you', children: [
-            jsx(StatusDot, { tone: 'good' }),
-            jsx('span', { className: 'font-semibold', children: 'you' }),
-            jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: '(always delivers)' })
-          ] }),
-          members.map((m) => jsx(HiveRosterChip, { key: m.profile, m }))
-        ] })
-      ] }),
-      jsx('div', { className: 'border-b px-6 py-2 text-xs text-muted-foreground', style: HIVE_T.wrap, children: 'Route directly with @name · use [ask @name] for a focused request · use [all] to broadcast to the room.' }),
-      jsx('div', { className: 'flex min-h-0 grow flex-col' , children:
-        soulProfile
-          ? jsx(HiveSoulEditor, { key: soulProfile, profile: soulProfile })
-          : view === 'scratch'
-            ? jsx(HiveScratchEditor, {})
-            : jsxs('div', { className: 'flex min-h-0 grow flex-col', children: [
-                jsx(HiveTimelineModeToggle, {}),
-                jsx(HiveTimelineBody, {}),
-                jsx(HiveComposer, {})
-              ] })
+      jsx(icons.FolderOpen, { size: 13, className: 'shrink-0 text-muted-foreground' }),
+      list && list.length
+        ? jsx(Select, {
+            value: active ? 'p:' + active.id : 'none',
+            onValueChange: pick,
+            children: [
+              jsx(SelectTrigger, { className: 'h-6 max-w-56 min-w-32 text-xs', children: jsx(SelectValue, { placeholder: 'No project' }) }),
+              jsx(SelectContent, {
+                children: [
+                  jsx(SelectItem, { value: 'none', children: 'No project' }),
+                  list.map((p) => jsx(SelectItem, { key: p.id, value: 'p:' + p.id, children: p.name || p.slug }))
+                ]
+              })
+            ]
+          })
+        : jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: err ? 'Projects unavailable' : 'Loading projects…' }),
+      active && jsx(Badge, { variant: 'outline', size: 'xs', children: active.branch || 'no branch' }),
+      active && active.primaryPath
+        ? jsx('span', { className: 'truncate text-muted-foreground', style: { ...HIVE_T.xs, maxWidth: 180 }, title: active.primaryPath, children: active.primaryPath })
+        : null
+    ]
+  })
+}
+
+function TsTeamPresetMenu() {
+  const teams = useValue($tsTeams)
+  const members = useValue($hiveMembers)
+  const [name, setName] = useState('')
+  return jsx(DropdownMenu, {
+    children: [
+      jsx(DropdownMenuTrigger, {
+        asChild: true,
+        children: jsx(Button, { variant: 'ghost', size: 'sm', title: 'Roster presets', children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.Users, { size: 13 }), 'Teams'] }) })
+      }),
+      jsx(DropdownMenuContent, {
+        align: 'start',
+        children: [
+          jsx('div', { className: 'px-2 py-1 text-muted-foreground', style: HIVE_T.xs, children: `${members.length} member(s) in the room` }),
+          ...(teams.length
+            ? teams.map((t) => jsx(DropdownMenuItem, { key: t.name, onSelect: () => void hiveApplyTeamPreset(t), children: jsxs('span', { children: [t.name, jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xsRemoveMl, children: `${(t.members || []).length} members` })] }) }))
+            : [jsx('div', { key: 'none', className: 'px-2 py-1 text-muted-foreground', style: HIVE_T.xs, children: 'No presets saved yet.' })]),
+          jsx(DropdownMenuSeparator, {}),
+          jsx('div', { className: 'flex items-center gap-1.5 px-2 py-1.5', children: [
+            jsx(Input, { value: name, placeholder: 'preset name', className: 'h-6 flex-1 text-xs', onChange: (e) => setName(e.target.value) }),
+            jsx(Button, { size: 'xs', onClick: () => { hiveSaveTeamPreset(name); setName('') }, children: 'Save current' })
+          ] })
+        ]
       })
     ]
   })
+}
+
+function TsRoomControls() {
+  const members = useValue($hiveMembers)
+  const [stopping, setStopping] = useState(false)
+  const stopAll = async () => {
+    setStopping(true)
+    // Every stop is the verified session.interrupt path, via hiveStopMember.
+    for (const m of $hiveMembers.get()) { if (m.sessionId) await hiveStopMember(m.profile) }
+    setStopping(false)
+  }
+  const anyLive = members.some((m) => m.sessionId)
+  return jsxs('div', {
+    className: 'flex items-center gap-1',
+    children: [
+      jsx(Button, {
+        variant: 'ghost', size: 'sm', disabled: stopping || !anyLive,
+        title: anyLive ? 'Interrupt every member session' : 'No live member sessions', onClick: () => void stopAll(),
+        children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.StopFilled, { size: 12 }), 'Stop all'] })
+      }),
+      jsx(HiveResetButton, {})
+    ]
+  })
+}
+
+function TsWorkersBadge() {
+  const members = useValue($hiveMembers)
+  const timeline = useValue($hiveTimeline)
+  const n = members.filter((m) => hiveStatusBusy(hiveMemberStatus(m, timeline))).length
+  return jsx(Badge, { variant: n ? 'default' : 'muted', title: 'Members mid-turn (derived from the live event stream)', children: n ? `${n} working` : 'ready' })
+}
+
+function TsApprovalsBadge() {
+  const members = useValue($hiveMembers)
+  const { total, errored } = hiveUseApprovals(members)
+  if (errored || total <= 0) return null
+  const open = () => {
+    $tsRightTab.set('approvals')
+    $tsSheets.set({ team: false, right: true })
+    hivePersist()
+  }
+  return jsx(Button, { variant: 'ghost', size: 'sm', title: 'Pending approvals', onClick: open, children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.Bell, { size: 13 }), String(total)] }) })
+}
+
+function TsSwarmRow() {
+  const swarm = useValue($hiveSwarm)
+  return jsxs('div', {
+    className: 'flex items-center justify-between gap-3 px-2.5 py-1.5',
+    children: [
+      jsx('span', { className: 'text-xs', children: 'Agents talk to each other' }),
+      jsx(Switch, { checked: swarm, onCheckedChange: (v) => { $hiveSwarm.set(!!v); hivePersist() } })
+    ]
+  })
+}
+
+function TsSettingsMenu() {
+  const swarm = useValue($hiveSwarm)
+  const view = useValue($hiveView)
+  const dock = useValue($tsDockOpen)
+  return jsx(DropdownMenu, {
+    children: [
+      jsx(DropdownMenuTrigger, {
+        asChild: true,
+        children: jsx(Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Room settings', children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.SlidersHorizontal, { size: 13 }), 'Settings'] }) })
+      }),
+      jsx(DropdownMenuContent, {
+        align: 'end',
+        children: [
+          jsx(TsSwarmRow, {}),
+          jsx('div', { className: 'px-2.5 pb-1 text-muted-foreground', style: HIVE_T.xs, children: swarm ? 'Relays between agents are injected live.' : 'Agents only reply to you — no inter-agent injection.' }),
+          jsx(DropdownMenuSeparator, {}),
+          jsx(DropdownMenuItem, { onSelect: () => { $hiveView.set(view === 'scratch' ? 'timeline' : 'scratch'); hivePersist() }, children: view === 'scratch' ? 'Close scratchpad' : 'Open scratchpad' }),
+          jsx(DropdownMenuItem, { onSelect: () => { $tsDockOpen.set(!dock); hivePersist() }, children: dock ? 'Hide bottom dock' : 'Show bottom dock' })
+        ]
+      })
+    ]
+  })
+}
+
+function TsToolbar() {
+  const sheets = useValue($tsSheets)
+  return jsxs('div', {
+    className: 'ts-toolbar', 'data-ts-toolbar': true,
+    children: [
+      jsx(TsRoomTitle, {}),
+      jsx(TsProjectSelect, {}),
+      jsx('span', { className: 'flex-1' }),
+      jsx(TsTeamPresetMenu, {}),
+      jsx(TsRoomControls, {}),
+      jsx(TsWorkersBadge, {}),
+      jsx(TsApprovalsBadge, {}),
+      jsx(TsSettingsMenu, {}),
+      jsx('button', {
+        type: 'button', className: 'ts-narrow-only ts-railbutton', title: 'Team', 'aria-label': 'Team panel',
+        onClick: () => $tsSheets.set({ team: !sheets.team, right: false }),
+        children: jsx(icons.Users, { size: 14 })
+      }),
+      jsx('button', {
+        type: 'button', className: 'ts-narrow-only ts-railbutton', title: 'Work panel', 'aria-label': 'Work panel',
+        onClick: () => $tsSheets.set({ team: false, right: !sheets.right }),
+        children: jsx(icons.Layers3, { size: 14 })
+      })
+    ]
+  })
+}
+
+// ── left column: Team ───────────────────────────────────────────────────────
+
+function TsAgentDetail({ m, status, turn }) {
+  const tasks = useValue($hiveTasks)
+  const key = hiveNormalize(m.profile)
+  const mine = hiveSortTasks((tasks || []).filter(
+    (t) => t && t.status !== 'passed' && (hiveNormalizeOpt(t.owner) === key || hiveNormalizeOpt(t.reviewer) === key)
+  ))
+  const sessionRef = m.storedId || m.sessionId || null
+  const action = (label, onClick, opts = {}) => jsx(Button, {
+    variant: opts.variant || 'outline', size: 'xs', disabled: !!opts.disabled, title: opts.title || label, onClick,
+    children: label
+  })
+  return jsxs('div', {
+    className: 'ts-card m-1 flex flex-col gap-1.5', 'data-ts-agent-detail': m.profile,
+    children: [
+      jsxs('div', { className: 'flex flex-col gap-0.5', style: HIVE_T.xs, children: [
+        jsxs('span', { className: 'text-muted-foreground', children: ['model: ', jsx('span', { className: 'text-(--ui-text-primary)', children: m.model ? `${m.provider || '?'} / ${m.modelLabel || m.model}` : 'inherits the profile default' })] }),
+        jsxs('span', { className: 'text-muted-foreground', children: ['context: ', jsx('span', { className: 'text-(--ui-text-primary)', children: hiveNormalizeContextMode(m.contextMode) })] }),
+        jsxs('span', { className: 'text-muted-foreground', children: ['session: ', jsx('span', { className: 'text-(--ui-text-primary)', children: sessionRef || 'none — Fresh context to start one' })] }),
+        jsxs('span', { className: 'text-muted-foreground', children: ['status: ', jsx('span', { className: 'text-(--ui-text-primary)', children: hiveStatusLabel(status) })] }),
+        turn && jsxs('span', { className: 'text-muted-foreground', children: ['this turn: ', jsx('span', { className: 'text-(--ui-text-primary)', children: hiveFmtDur((turn.doneAt || Date.now()) - turn.startedAt) })] })
+      ] }),
+      jsxs('div', { className: 'flex flex-col gap-0.5', children: [
+        jsx('span', { className: 'font-medium text-muted-foreground', style: HIVE_T.xs, children: 'Open work items' }),
+        mine.length
+          ? mine.map((t) => jsxs('div', { key: t.id, className: 'flex items-center gap-1.5', style: HIVE_T.xs, children: [
+              jsx('span', { className: 'font-mono text-muted-foreground', children: '#' + t.id }),
+              jsxs('span', { style: { color: hiveTaskStatusTone(t) }, className: 'font-semibold', children: [hiveTaskStatusLabel(t), hiveNormalizeOpt(t.reviewer) === key && hiveNormalizeOpt(t.owner) !== key ? ' · reviewing' : ''] }),
+              jsx('span', { className: 'min-w-0 flex-1 truncate', title: t.title, children: t.title })
+            ] }))
+          : jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'None.' })
+      ] }),
+      jsxs('div', { className: 'flex flex-wrap items-center gap-1', children: [
+        action('Stop', () => void hiveStopMember(m.profile), { variant: 'outline', disabled: status === 'idle' || status === 'offline', title: 'Interrupt this session (session.interrupt)' }),
+        action('View session', () => { if (sessionRef) host.navigate('/' + encodeURIComponent(sessionRef)) }, { disabled: !sessionRef, title: 'Open the native sessions pane on this session' }),
+        action(m.muted ? 'Unmute' : 'Mute', () => void hiveToggleMute(m.profile), {}),
+        action(m.browser ? 'Release browser' : 'Grant browser', () => void hiveSetBrowser(m.profile, !m.browser), {}),
+        action(m.leader ? 'Clear leader' : 'Mark leader', () => hiveSetLeader(m.profile), { title: 'Sort this member to the top of the panel' }),
+        action('Fresh context', () => void hiveFreshContext(m.profile), { title: 'Drop the session and mint a new one' }),
+        action('Remove', () => void hiveRemoveMember(m.profile), { variant: 'destructive', title: 'Remove from the room' })
+      ] }),
+      jsx(HiveContextModeControl, { m }),
+      jsx(HiveModelSubmenu, { m })
+    ]
+  })
+}
+
+function TsAgentRow({ m, status, turn, open }) {
+  const selected = useValue($tsAgentSelected)
+  const isSelected = hiveNormalize(selected || '') === hiveNormalize(m.profile)
+  const meta = [
+    m.leader ? 'leader' : null,
+    m.muted ? 'muted' : null,
+    m.model ? (m.modelLabel || m.model) : 'no model',
+    turn ? hiveFmtDur((turn.doneAt || Date.now()) - turn.startedAt) : null
+  ].filter(Boolean).join(' · ')
+  const toggle = () => {
+    $tsAgentSelected.set(m.profile)
+    $tsAgentExpanded.set(hiveToggleAgentExpanded($tsAgentExpanded.get(), m.profile))
+    hivePersist()
+  }
+  return jsxs('div', {
+    className: 'ts-row', 'data-selected': isSelected ? 'true' : 'false', 'data-agent': m.profile,
+    onClick: toggle,
+    title: `@${m.profile} · ${hiveStatusLabel(status)} · session ${m.sessionId || 'pending'}`,
+    children: [
+      jsx(TsAgentAvatar, { profile: m.profile }),
+      jsxs('span', { className: 'ts-team-body flex min-w-0 flex-1 flex-col gap-0.5', children: [
+        jsxs('span', { className: 'flex min-w-0 items-center gap-1.5', children: [
+          jsx(TsStatusDot, { status }),
+          jsx('span', { className: 'truncate text-xs font-semibold', children: '@' + m.profile }),
+          m.browser && jsx(icons.Globe, { size: 11, className: 'shrink-0 text-muted-foreground' }),
+          hiveStatusGlyph(status) ? jsx('span', { className: cn('shrink-0', hiveStatusBusy(status) && 'animate-pulse'), style: { ...HIVE_T.xs, color: status === 'error' ? 'var(--ui-red)' : undefined }, children: hiveStatusGlyph(status) }) : null
+        ] }),
+        jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: meta })
+      ] }),
+      jsx('span', { className: 'ts-team-body shrink-0 text-muted-foreground', style: HIVE_T.xs, children: open ? '▾' : '▸' })
+    ]
+  })
+}
+
+function TsTeamPanel() {
+  const members = useValue($hiveMembers)
+  const timeline = useValue($hiveTimeline)
+  const expanded = useValue($tsAgentExpanded)
+  const ordered = useMemo(() => hiveOrderMembers(members), [members])
+  return jsxs('div', {
+    className: 'ts-col ts-col-team', 'data-ts-team': true,
+    children: [
+      jsxs('div', { className: 'ts-strip', children: [
+        jsx('span', { className: 'text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground', children: 'Team' }),
+        jsx('span', { className: 'flex-1' }),
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `${members.length + 1}/11` })
+      ] }),
+      jsx(ScrollArea, {
+        className: 'ts-scroll',
+        children: jsxs('div', { className: 'flex flex-col', children: [
+          jsxs('div', { className: 'ts-row', 'data-role': 'you', title: 'You are always in the room', children: [
+            jsx(TsAgentAvatar, { profile: 'you' }),
+            jsxs('span', { className: 'ts-team-body flex min-w-0 flex-1 items-center gap-1.5', children: [
+              jsx(StatusDot, { tone: 'good' }),
+              jsx('span', { className: 'text-xs font-semibold', children: 'you' }),
+              jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: 'always delivers' })
+            ] })
+          ] }),
+          ordered.map((m) => {
+            const status = hiveMemberStatus(m, timeline)
+            const turn = hiveLastOpenTurn(timeline, m.profile)
+            const isOpen = !!expanded[hiveNormalize(m.profile)]
+            return jsxs('div', { children: [
+              jsx(TsAgentRow, { m, status, turn, open: isOpen }),
+              isOpen && jsx(TsAgentDetail, { m, status, turn })
+            ] }, m.profile)
+          })
+        ] })
+      }),
+      jsx('div', { className: 'ts-dock', children: [
+        jsx(HiveAddMember, {}),
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: members.length >= HIVE_MAX_MEMBERS ? `Room full (${HIVE_MAX_MEMBERS})` : `${members.length} member(s)` })
+      ] })
+    ]
+  })
+}
+
+// ── center column: conversation ─────────────────────────────────────────────
+
+function TsWorkCard({ entry }) {
+  const kind = entry.kind
+  const tone = hiveTaskStatusTone(entry)
+  const label = kind === 'task' ? 'TASK' : kind === 'done' ? 'SUBMITTED' : (entry.verdict ? 'VERDICT' : 'REVIEW')
+  const who = kind === 'task' ? `→ @${entry.owner}`
+    : kind === 'done' ? `@${entry.owner} → @${entry.reviewer || 'unreviewed'}`
+    : entry.verdict ? `@${entry.reviewer} → @${entry.owner || '?'}`
+    : `@${entry.reviewer} ← @${entry.owner || '?'}`
+  return jsxs('div', {
+    className: 'ts-card flex flex-col gap-1', 'data-ts-work': kind,
+    style: { borderLeft: `2px solid ${tone}` },
+    children: [
+      jsxs('div', { className: 'flex items-center gap-2', style: HIVE_T.xs, children: [
+        entry.workId ? jsx('span', { className: 'font-mono text-muted-foreground', children: '#' + entry.workId }) : null,
+        jsx('span', { className: 'font-semibold uppercase tracking-wide', style: { color: tone }, children: label }),
+        jsx('span', { className: 'truncate text-muted-foreground', children: who }),
+        jsx('time', { className: 'ml-auto text-muted-foreground', style: { fontSize: 11, lineHeight: '14px' }, children: hiveTime(entry.ts) })
+      ] }),
+      jsx('div', { className: 'min-w-0 break-words text-xs leading-relaxed', style: HIVE_T.wrap, children: hiveRenderText(entry.text || '') }),
+      kind === 'done' && entry.artifact
+        ? jsx('div', { className: 'rounded border p-1.5 text-muted-foreground', style: HIVE_T.xsWrapWide, children: entry.artifact })
+        : null,
+      entry.reason
+        ? jsx('div', { className: 'text-muted-foreground', style: { ...HIVE_T.xs, color: tone }, children: entry.reason })
+        : null
+    ]
+  })
+}
+
+/** The dumb switch §3.5 asks for: kind → renderer. Prose and turn cards are
+ *  handed to the proven renderers (HiveMemberTone / HiveTurnRow) rather than
+ *  reimplemented, so the timeline keeps its existing behavior exactly. */
+function TsCard({ card }) {
+  const entry = card.entry
+  if (card.kind === 'task' || card.kind === 'done' || card.kind === 'review') return jsx(TsWorkCard, { entry })
+  if (entry.kind === 'turn') return jsx(HiveTurnRow, { turn: entry })
+  return jsxs('div', { className: 'ts-entrygroup', children: [
+    jsx(HiveMemberTone, { m: entry }),
+    String(entry.text || '').trim() ? jsx(TsCopyButton, { text: entry.text }) : null
+  ] })
+}
+
+function TsCardList({ cards, empty, followKey }) {
+  const ref = useRef(null)
+  const follow = hiveUseFollowScroll(ref, followKey)
+  return jsxs('div', {
+    className: 'relative flex min-h-0 grow flex-col',
+    children: [
+      jsx(ScrollArea, {
+        ref, className: 'ts-scroll', onScroll: follow.onScroll,
+        children: jsx('div', {
+          className: 'flex flex-col gap-1 p-2', 'data-ts-feed': true,
+          children: cards.length
+            ? cards.map((c) => jsx(TsCard, { key: c.id, card: c }))
+            : jsx('div', { className: 'p-6 text-center text-xs text-muted-foreground', children: empty })
+        })
+      }),
+      !follow.pinned && jsx(Button, {
+        size: 'sm', variant: 'outline', onClick: follow.jump,
+        className: 'absolute bottom-3 right-3 z-10 shadow', children: '↓ latest'
+      })
+    ]
+  })
+}
+
+function TsTimelineHeader({ search, onSearch }) {
+  return jsx(HiveTimelineModeToggle, {
+    right: jsx(Input, {
+      value: search, onChange: (e) => onSearch(e.target.value),
+      placeholder: 'Filter the feed…', className: 'h-6 w-40 text-xs', 'aria-label': 'Filter the conversation feed'
+    })
+  })
+}
+
+function TsTimelineBody({ search }) {
+  const mode = useValue($hiveTimelineMode)
+  const timeline = useValue($hiveTimeline)
+  const filtered = useMemo(() => hiveFilterCards(hiveTimelineToCards(timeline), search), [timeline, search])
+  // A filter always switches to the Feed: the By-agent sections group by
+  // speaker, so a text filter there would silently do nothing.
+  if (mode === 'agents' && !String(search || '').trim()) return jsx(HiveGroupedTimeline, {})
+  return jsx(TsCardList, {
+    cards: filtered,
+    followKey: timeline,
+    empty: timeline.length
+      ? 'Nothing matches that filter.'
+      : 'No activity yet. Message @default or add agents to start the crew.'
+  })
+}
+
+function TsConversationPanel() {
+  const view = useValue($hiveView)
+  const [search, setSearch] = useState('')
+  const soulProfile = view.startsWith('soul:') ? view.slice(5) : null
+  return jsxs('div', {
+    className: 'ts-col ts-col-center', 'data-ts-center': true,
+    children: [
+      soulProfile
+        ? jsx(HiveSoulEditor, { key: soulProfile, profile: soulProfile })
+        : view === 'scratch'
+          ? jsx(HiveScratchEditor, {})
+          : jsxs('div', { className: 'flex min-h-0 min-w-0 grow flex-col', children: [
+              jsx(TsTimelineHeader, { search, onSearch: setSearch }),
+              jsx(TsTimelineBody, { search }),
+              jsx(HiveComposer, {})
+            ] })
+    ]
+  })
+}
+
+// ── right column: tabs ──────────────────────────────────────────────────────
+
+function TsTaskRow({ task }) {
+  const tone = hiveTaskStatusTone(task)
+  const dur = task.status === 'passed' ? null : hiveFmtDur(Date.now() - (task.ts || Date.now()))
+  return jsxs('div', {
+    className: 'ts-card flex flex-col gap-1', 'data-ts-task': task.id,
+    style: { borderLeft: `2px solid ${tone}` },
+    children: [
+      jsxs('div', { className: 'flex items-center gap-2', style: HIVE_T.xs, children: [
+        jsx('span', { className: 'font-mono text-muted-foreground', children: '#' + task.id }),
+        jsx('span', { className: 'font-semibold uppercase tracking-wide', style: { color: tone }, children: hiveTaskStatusLabel(task) }),
+        dur ? jsx('span', { className: 'text-muted-foreground', children: dur }) : null,
+        jsx('span', { className: 'ml-auto truncate text-muted-foreground', children: `@${task.owner}${task.reviewer ? ' → @' + task.reviewer : ' · unreviewed'}` })
+      ] }),
+      jsx('div', { className: 'min-w-0 break-words text-xs', style: HIVE_T.wrap, children: task.title }),
+      task.artifact
+        ? jsx('div', { className: 'rounded border p-1.5 text-muted-foreground', style: HIVE_T.xsWrapWide, children: hiveTruncatePayload(task.artifact, 400) })
+        : null,
+      task.status === 'failed'
+        ? jsx('div', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Failed — routed back to the owner; a new [done] returns it to IN REVIEW.' })
+        : null
+    ]
+  })
+}
+
+function TsTasksTab() {
+  const tasks = useValue($hiveTasks)
+  const rows = useMemo(() => hiveSortTasks(tasks), [tasks])
+  return jsx(ScrollArea, {
+    className: 'ts-scroll',
+    children: jsxs('div', { className: 'flex flex-col gap-1 p-2', 'data-ts-tasks': true, children: [
+      jsxs('div', { className: 'ts-card flex flex-col gap-0.5', children: [
+        jsx('span', { className: 'font-medium text-xs', children: 'Board' }),
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Durable tasks live in native Kanban (board `team`) — no desktop surface exists for it, so ask an agent: @atlas show the board.' }),
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'These rows are this room\u2019s work items. Dependencies, branch/worktree links and error reasons arrive with the Phase 4 kanban adapter.' })
+      ] }),
+      rows.length
+        ? rows.map((t) => jsx(TsTaskRow, { key: t.id, task: t }))
+        : jsx('div', { className: 'rounded-md border border-dashed p-2 text-muted-foreground', style: HIVE_T.xs, children: 'No work items. Assign one with [task @name] …, then ask for a check with [review @name #id].' })
+    ] })
+  })
+}
+
+function TsActivityTab() {
+  const timeline = useValue($hiveTimeline)
+  const cards = useMemo(() => hiveActivityCards(timeline), [timeline])
+  return jsx(ScrollArea, {
+    className: 'ts-scroll',
+    children: jsxs('div', { className: 'flex flex-col gap-1 p-2', 'data-ts-activity': true, children: [
+      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Tools, work items and room events only — no prose. Read-only.' }),
+      cards.length
+        ? cards.map((c) => jsx(TsCard, { key: c.id, card: c }))
+        : jsx('div', { className: 'rounded-md border border-dashed p-2 text-muted-foreground', style: HIVE_T.xs, children: 'Nothing has happened yet.' })
+    ] })
+  })
+}
+
+function TsFilesTab() {
+  const active = useValue($tsActiveProject)
+  const roomCwd = useValue($hiveCwd)
+  const [state, setState] = useState({ loading: false, folders: [], error: '' })
+  const activeId = active && active.id ? active.id : ''
+  useEffect(() => {
+    let live = true
+    if (!activeId) { setState({ loading: false, folders: [], error: 'no-project' }); return () => { live = false } }
+    setState((s) => ({ ...s, loading: true, error: '' }))
+    host.request('projects.get', { id: activeId }).then((res) => {
+      if (!live) return
+      const p = res && res.project
+      setState({ loading: false, folders: (p && p.folders) || [], error: '' })
+    }).catch((err) => {
+      if (!live) return
+      setState({ loading: false, folders: [], error: (err && err.message) || 'unavailable' })
+    })
+    return () => { live = false }
+  }, [activeId])
+
+  const openFiles = () => hiveRunAppAction('view.showFiles')
+
+  if (!activeId || state.error) {
+    return jsx(ScrollArea, {
+      className: 'ts-scroll',
+      children: jsxs('div', { className: 'flex flex-col gap-1.5 p-2', 'data-ts-files': 'degraded', children: [
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: !activeId
+          ? 'No project selected — pick one in the toolbar to list its folders.'
+          : `Couldn\u2019t read the project folders (${state.error}).` }),
+        jsx('button', { type: 'button', className: 'ts-linkcard', onClick: openFiles, children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.FolderOpen, { size: 12 }), 'Open the native Files pane'] }) }),
+        jsx('span', { className: 'break-words text-muted-foreground', style: HIVE_T.xs, children: roomCwd || 'no room folder set' })
+      ] })
+    })
+  }
+
+  return jsx(ScrollArea, {
+    className: 'ts-scroll',
+    children: jsx('div', { className: 'flex flex-col gap-1 p-2', 'data-ts-files': 'ready', children:
+      state.loading && !state.folders.length
+        ? jsx('div', { className: 'p-2 text-xs text-muted-foreground', children: 'Loading folders…' })
+        : jsxs('div', { className: 'flex flex-col gap-1', children: [
+            jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `${(active && active.name) || ''} · ${state.folders.length} folder(s)` }),
+            ...state.folders.map((f) => jsxs('div', {
+              key: f.path, className: 'ts-card flex items-center gap-2', style: HIVE_T.xs,
+              children: [
+                jsx('span', { className: 'min-w-0 flex-1 truncate', title: f.path, children: f.label || f.path }),
+                f.is_primary ? jsx(Badge, { variant: 'muted', size: 'xs', children: 'primary' }) : null,
+                jsx(Button, { variant: 'ghost', size: 'xs', onClick: openFiles, title: 'Open the native Files pane', children: 'Open in Files' })
+              ]
+            }))
+          ] })
+    })
+  })
+}
+
+function TsApprovalsTab({ data }) {
+  const members = useValue($hiveMembers)
+  const byProfile = data.byProfile || {}
+  const rows = members.filter((m) => byProfile[m.profile])
+  const errored = rows.filter((m) => byProfile[m.profile].error)
+  return jsx(ScrollArea, {
+    className: 'ts-scroll',
+    children: jsxs('div', { className: 'flex flex-col gap-1 p-2', 'data-ts-approvals': true, children: [
+      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'A convenience mirror — the app\u2019s own modal still owns live approval prompts. Choices come from the server verbatim.' }),
+      errored.length
+        ? jsx('div', { className: 'ts-card', children: jsxs('div', { className: 'flex flex-col gap-0.5', children: [
+            jsx('span', { className: 'font-medium text-xs', children: 'Approval reads unavailable' }),
+            jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `approval.pending failed for: ${errored.map((m) => '@' + m.profile).join(', ')}. Answer those in the native prompt.` })
+          ] }) })
+        : null,
+      ...(!rows.length && !errored.length ? [jsx('div', { className: 'rounded-md border border-dashed p-2 text-muted-foreground', style: HIVE_T.xs, key: 'empty', children: 'No pending approvals.' })] : []),
+      ...rows.map((m) => {
+        const info = byProfile[m.profile]
+        if (info.error || !info.pending.length) return null
+        return jsxs('div', { className: 'ts-card flex flex-col gap-1.5', key: m.profile, children: [
+          jsx('span', { className: 'font-medium text-xs', children: '@' + m.profile }),
+          ...info.pending.map((p, i) => jsxs('div', {
+            className: 'flex flex-col gap-1', key: (p && p.request_id) || String(i),
+            children: [
+              jsx('span', { className: 'min-w-0 break-words text-muted-foreground', style: HIVE_T.xs, children: (p && (p.command || p.tool || p.title || p.kind)) || 'approval requested' }),
+              jsx('div', { className: 'flex flex-wrap gap-1', children: ((p && p.choices) || ['deny']).map((c) => jsx(Button, {
+                key: c, size: 'xs', variant: c === 'deny' ? 'destructive' : 'outline',
+                onClick: () => void hiveRespondApproval(m, p && p.request_id, c),
+                children: c
+              })) })
+            ]
+          }))
+        ] })
+      })
+    ] })
+  })
+}
+
+function TsWorkflowTab() {
+  const query = useQuery({
+    queryKey: ['buzz-hive', 'workflows'],
+    refetchInterval: TS_WORKFLOW_POLL_MS,
+    queryFn: async () => {
+      const api = window && window.hermesDesktop && window.hermesDesktop.api
+      if (!api) throw new Error('desktop bridge unavailable')
+      return (await api({ path: '/api/plugins/hermes-workflows/runs' })) || {}
+    }
+  })
+  const runs = (query.data && query.data.runs) || []
+  const openPage = () => host.navigate('/workflows')
+  if (query.error) {
+    return jsx(ScrollArea, {
+      className: 'ts-scroll',
+      children: jsxs('div', { className: 'flex flex-col gap-1.5 p-2', 'data-ts-workflow': 'degraded', children: [
+        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Workflow runs are not readable from this page in this build.' }),
+        jsx('button', { type: 'button', className: 'ts-linkcard', onClick: openPage, children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.Zap, { size: 12 }), 'Open the native Workflows page'] }) })
+      ] })
+    })
+  }
+  return jsx(ScrollArea, {
+    className: 'ts-scroll',
+    children: jsxs('div', { className: 'flex flex-col gap-1 p-2', 'data-ts-workflow': 'ready', children: [
+      jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Read-only mirror. Gate release and run creation stay on the Workflows page (the workflow engine owns them).' }),
+      runs.length
+        ? runs.map((r) => jsxs('div', {
+            className: 'ts-card flex flex-col gap-1', key: r.id,
+            children: [
+              jsxs('div', { className: 'flex items-center gap-2', style: HIVE_T.xs, children: [
+                jsx('span', { className: 'font-mono text-muted-foreground', children: r.id }),
+                jsx('span', { className: 'font-semibold uppercase tracking-wide', children: r.status || 'unknown' }),
+                r.held_gate ? jsx(Badge, { variant: 'warn', size: 'xs', children: 'gate held' }) : null,
+                jsx('span', { className: 'ml-auto text-muted-foreground', children: `${r.nodes_done || 0}/${r.nodes_total || 0} nodes` })
+              ] }),
+              jsx('div', { className: 'min-w-0 truncate text-xs', title: r.name, children: r.name || '(unnamed run)' }),
+              jsxs('div', { className: 'flex items-center gap-1.5', style: HIVE_T.xs, children: [
+                jsx('span', { className: 'truncate text-muted-foreground', children: r.owner_profile ? '@' + r.owner_profile : 'unowned' }),
+                jsx(Button, { variant: 'ghost', size: 'xs', onClick: openPage, children: 'Open' })
+              ] })
+            ]
+          }))
+        : jsx('div', { className: 'rounded-md border border-dashed p-2 text-muted-foreground', style: HIVE_T.xs, children: 'No workflow runs yet.' })
+    ] })
+  })
+}
+
+function TsRightRail() {
+  const tab = useValue($tsRightTab)
+  const select = (id) => {
+    $tsRightTab.set(id)
+    $tsSheets.set((s) => ({ team: false, right: true }))
+    hivePersist()
+  }
+  return jsx('div', {
+    className: 'ts-rail', 'data-ts-rail': true,
+    children: TS_RIGHT_TABS.map((t) => jsx('button', {
+      key: t.id, type: 'button', className: 'ts-railbutton', 'data-active': tab === t.id ? 'true' : 'false',
+      title: t.label, 'aria-label': t.label, onClick: () => select(t.id),
+      children: jsx('span', { style: { fontSize: 10 }, children: t.label.slice(0, 2) })
+    }))
+  })
+}
+
+function TsRightPanel() {
+  const tab = useValue($tsRightTab)
+  const members = useValue($hiveMembers)
+  const approvals = hiveUseApprovals(members)
+  const setTab = (v) => { $tsRightTab.set(v); hivePersist() }
+  return jsxs('div', {
+    className: 'ts-col ts-col-right', 'data-ts-right': true,
+    children: [
+      jsxs('div', { className: 'ts-right-body flex min-h-0 grow flex-col', children: [
+        jsxs('div', { className: 'ts-strip', children: [
+          jsx('span', { className: 'text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground', children: 'Work' }),
+          jsx('span', { className: 'flex-1' }),
+          approvals.total > 0 ? jsx(Badge, { variant: 'warn', size: 'xs', children: String(approvals.total) }) : null
+        ] }),
+        jsx(Tabs, {
+          value: tab, onValueChange: setTab, className: 'gap-0',
+          children: jsx(TabsList, {
+            className: 'mx-2 mt-1 h-7 w-auto max-w-[calc(100%-1rem)] justify-start gap-0.5 overflow-x-auto p-0.5',
+            children: TS_RIGHT_TABS.map((t) => jsx(TabsTrigger, {
+              key: t.id, value: t.id, className: 'h-6 gap-1 px-1.5 text-[0.6875rem]',
+              children: t.label
+            }))
+          })
+        }),
+        jsx('div', { className: 'flex min-h-0 grow flex-col', children:
+          tab === 'tasks' ? jsx(TsTasksTab, {})
+            : tab === 'activity' ? jsx(TsActivityTab, {})
+              : tab === 'files' ? jsx(TsFilesTab, {})
+                : tab === 'approvals' ? jsx(TsApprovalsTab, { data: approvals })
+                  : jsx(TsWorkflowTab, {})
+        })
+      ] }),
+      jsx(TsRightRail, {})
+    ]
+  })
+}
+
+// ── bottom dock (links only — nothing is embedded) ──────────────────────────
+
+function TsBottomDock() {
+  const open = useValue($tsDockOpen)
+  const links = [
+    { id: 'terminal', label: 'Terminal', icon: icons.Terminal, run: () => hiveRevealPane('terminal') },
+    { id: 'logs', label: 'Logs', icon: icons.FileText, run: () => hiveRevealPane('logs') },
+    { id: 'sessions', label: 'Sessions', icon: icons.MessageSquareText, run: () => hiveRevealPane('sessions') },
+    { id: 'review', label: 'Review', icon: icons.Eye, run: () => hiveRunAppAction('view.toggleReview') }
+  ]
+  return jsxs('div', {
+    className: 'ts-dock', 'data-ts-dock': open ? 'open' : 'closed',
+    children: [
+      jsx(Button, {
+        variant: 'ghost', size: 'xs', 'aria-expanded': open ? 'true' : 'false',
+        title: 'Bottom dock — links out to the native panes',
+        onClick: () => { $tsDockOpen.set(!open); hivePersist() },
+        children: jsxs('span', { className: 'flex items-center gap-1', children: [jsx(icons.PanelBottom, { size: 12 }), 'Dock'] })
+      }),
+      open
+        ? links.map((l) => jsx('button', {
+            key: l.id, type: 'button', className: 'ts-linkcard', title: `Reveal the native ${l.label} pane`,
+            onClick: l.run,
+            children: jsxs('span', { className: 'flex items-center gap-1.5', style: HIVE_T.xs, children: [jsx(l.icon, { size: 12 }), l.label] })
+          }))
+        : jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Native terminal / logs / sessions / review live in their own panes — open them from here.' })
+    ]
+  })
+}
+
+// ── <600px overlay sheets ───────────────────────────────────────────────────
+
+function TsSheet({ side, open, children }) {
+  return jsx('div', {
+    className: 'ts-sheet', 'data-side': side, 'data-open': open ? 'true' : 'false',
+    children
+  })
+}
+
+function TsWorkspace() {
+  const sheets = useValue($tsSheets)
+  return jsxs('div', {
+    className: 'ts-workspace', 'data-ts-workspace': true,
+    children: [
+      jsx(TsToolbar, {}),
+      jsx(TsTeamPanel, {}),
+      jsx(TsConversationPanel, {}),
+      jsx(TsRightPanel, {}),
+      jsx(TsBottomDock, {}),
+      jsx(TsSheet, { side: 'team', open: !!sheets.team, children: jsx(TsTeamPanel, {}) }),
+      jsx(TsSheet, { side: 'right', open: !!sheets.right, children: jsx(TsRightPanel, {}) })
+    ]
+  })
+}
+
+function HivePage() {
+  return jsx(TsWorkspace, {})
 }
 
 // ── register ────────────────────────────────────────────────────────────────
@@ -2737,11 +3735,13 @@ export default {
 
   register(ctx) {
     hiveStorageRef = ctx.storage
+    hiveCtxRef = ctx
+    hiveInjectStyles()
     const raw = ctx.storage.get(HIVE_STORAGE_KEY, null)
     if (raw && (!raw.members || !Array.isArray(raw.members))) {
       ctx.storage.set(HIVE_STORAGE_KEY, { title: 'hive', cwd: '', members: [], timeline: [], swarm: true })
     }
-    void hiveBootHydrate()
+    void hiveBootHydrate().then(() => hiveLoadProjects())
 
     const disposers = []
     hiveOpenPage = () => host.navigate(HIVE_ROUTE)
@@ -2773,24 +3773,28 @@ export default {
     disposers.push(host.onEvent('message.delta', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
-      hiveAppendTurnText(m, (e.payload && e.payload.text) || '')
+      // Coalesced: the batch lands in the open bubble on the ~50ms window.
+      hiveQueueDelta(m, (e.payload && e.payload.text) || '')
       hiveMarkStatus(e.session_id, 'streaming')
     }))
     disposers.push(host.onEvent('thinking.delta', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
+      hiveFlushDelta(e.session_id) // keep text and phase in event order
       hivePatchOpenTurn(m, { phase: 'thinking' })
       hiveMarkStatus(e.session_id, 'thinking')
     }))
     disposers.push(host.onEvent('reasoning.delta', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
+      hiveFlushDelta(e.session_id)
       hivePatchOpenTurn(m, { phase: 'thinking' })
       hiveMarkStatus(e.session_id, 'thinking')
     }))
     disposers.push(host.onEvent('tool.start', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
+      hiveFlushDelta(e.session_id)
       hiveTurnToolStart(m, (e.payload && (e.payload.tool || e.payload.name)) || 'tool')
     }))
     disposers.push(host.onEvent('tool.complete', (e) => {
@@ -2817,6 +3821,7 @@ export default {
     disposers.push(host.onEvent('message.complete', (e) => {
       const m = hiveMemberBySession(e.session_id, e.profile)
       if (!m) return
+      hiveFlushDelta(e.session_id) // the fold must see every buffered delta
       // The spine itself holds the streamed text now (single source).
       const open = hiveLastOpenTurn($hiveTimeline.get(), m.profile)
       const buffered = open ? String(open.text || '') : ''
@@ -2825,9 +3830,19 @@ export default {
     }))
     disposers.push(host.onEvent('assistant.completed', hiveHandleFallbackCompleted))
 
+    // ── Phase 1 cleanup (§8.3) ──────────────────────────────────────────────
+    // Everything this plugin added — subscriptions (above), the delta timers,
+    // the injected style sheet, the query caches it owns — is released here.
+    // Load → use → disable → re-enable must leave no duplicate rows and no
+    // live timers.
     ctx.onDispose(() => {
       hiveOpenPage = null
+      hiveClearDeltas()
       disposers.forEach((d) => { try { d() } catch { /* noop */ } })
+      try { queryClient.removeQueries({ queryKey: ['buzz-hive'] }) } catch { /* noop */ }
+      try { hivePersist() } catch { /* noop */ }
+      hiveRemoveStyles()
+      hiveCtxRef = null
     })
   }
 }
