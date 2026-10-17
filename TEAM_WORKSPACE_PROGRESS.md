@@ -22,3 +22,28 @@
   commit `c71f7fb` ("restore point before inter-agent comms overhaul").
 - No package.json — plugin is a single plain-ESM plugin.js loaded uncompiled (jsx() calls).
 - Sandbox repo needs `git init` + harmless content before Phase 2/5 tests.
+
+## 2026-10-17 — Phase 0 audit complete (ARCH)
+
+1. Read the full plugin (worktree/plugin.js, 2613 lines): component tree, state
+   atoms, member-session lifecycle, model selection, swarm relay, marker
+   protocol, persistence, unload cleanup — all documented with file:line in
+   TEAM_WORKSPACE_ARCHITECTURE.md §1.
+2. Inspected installed integrations in Hermes v0.22.2 source + plugins:
+   kanban (no RPC/HTTP surface — UNSUPPORTED direct), projects (full RPC
+   family + projects.changed event), approvals (approval.pending/received/
+   respond RPCs; push owned by app), git worktrees (kanban workspace_kind
+   mechanism), hermes-workflows v1.3.6 (REST /api/plugins/hermes-workflows/*,
+   desktop /workflows page, ::workflow directive), hermes-teammates v0.1.2
+   (agent tools only, kanban lane pattern).
+3. Completed the capability matrix with VERIFIED / PLAUSIBLE-NEEDS-TEST /
+   UNSUPPORTED labels and evidence (ARCHITECTURE.md §3), the verified SDK call
+   list (§4), canonical sources of truth (§5), and top risks (§6).
+4. Findings filed: F1 session reattach calls non-existent `session.info` RPC
+   (plugin.js:1631; event-only at tui_gateway/contracts/events.py:393) —
+   hydrated members return sessionless; F2/F3 `tool.error`/`assistant.completed`
+   subscriptions are dead on the desktop gateway (guarded, harmless).
+5. Acceptance checks: matrix filled, SDK call list written, code untouched
+   (only this file + ARCHITECTURE.md changed).
+6. Next: Phase 1 UI/UX design spec (board task t_1e021903) reads
+   ARCHITECTURE.md §3-§4 as its constraint set.
