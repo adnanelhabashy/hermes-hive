@@ -561,6 +561,10 @@ function hiveScrubMarkers(content) {
 function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
   const next = (tasks || []).slice()
   const routes = []
+  // Timeline cards for every effect that ACTUALLY applied — the §3.5 mapping's
+  // Task/Done/Review rows. Derived from this same pure fold, so a card can
+  // never claim something the state machine did not do.
+  const cards = []
   const now = ts || 0
   const author = hiveNormalize(from)
   const newId = mkId || hiveMakeTaskId
@@ -570,6 +574,7 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
     const id = newId()
     const owner = hiveNormalize(t.target)
     next.push({ id, title: t.title || '(untitled)', from: author, owner, reviewer: '', status: 'open', artifact: '', ts: now })
+    cards.push({ kind: 'task', workId: id, owner, reviewer: '', status: 'open', ts: now, text: `task #${id} → @${owner}: ${t.title || '(untitled)'}` })
     routes.push({
       target: owner,
       kind: 'task',
@@ -581,6 +586,11 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
     const i = find(d.id)
     if (i === -1) continue
     next[i] = { ...next[i], status: 'submitted', artifact: d.text, ts: now }
+    cards.push({
+      kind: 'done', workId: d.id, owner: hiveNormalizeOpt(next[i].owner), reviewer: hiveNormalizeOpt(next[i].reviewer),
+      status: 'submitted', ts: now, artifact: hiveTruncatePayload(d.text, 400),
+      text: `#${d.id} submitted by @${author}: ${next[i].title}`
+    })
     const reviewer = hiveNormalizeOpt(next[i].reviewer)
     const requester = hiveNormalizeOpt(next[i].from)
     if (reviewer && reviewer !== author) {
@@ -599,6 +609,11 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
     if (i === -1) continue
     const reviewer = hiveNormalize(r.target)
     next[i] = { ...next[i], reviewer, ts: now }
+    cards.push({
+      kind: 'review', workId: r.id, owner: hiveNormalizeOpt(next[i].owner), reviewer,
+      status: 'submitted', ts: now, review: 'request',
+      text: `#${r.id} review requested from @${reviewer}: ${next[i].title}`
+    })
     routes.push({
       target: reviewer,
       kind: 'review',
@@ -613,6 +628,12 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
     const i = find(v.id)
     if (i === -1) continue
     next[i] = { ...next[i], status: v.ok ? 'passed' : 'failed', ts: now }
+    cards.push({
+      kind: 'review', workId: v.id, owner: hiveNormalizeOpt(next[i].owner), reviewer: author,
+      status: v.ok ? 'passed' : 'failed', ts: now, verdict: v.ok ? 'pass' : 'fail',
+      reason: hiveTruncatePayload(v.text, 400),
+      text: `#${v.id} verdict ${v.ok ? 'pass' : 'fail'} by @${author}: ${next[i].title}`
+    })
     const owner = hiveNormalizeOpt(next[i].owner)
     if (owner && owner !== author) {
       routes.push({
@@ -625,7 +646,7 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
     }
   }
 
-  return { tasks: next.slice(-HIVE_TASK_KEEP), routes }
+  return { tasks: next.slice(-HIVE_TASK_KEEP), routes, cards }
 }
 
 /**
@@ -1268,7 +1289,17 @@ async function hiveRunPlan(plan, from) {
 
 function hiveAppendTimeline(msg) {
   const t = $hiveTimeline.get()
-  $hiveTimeline.set([...t, { id: Math.random().toString(36).slice(2, 9), ts: Date.now(), ...msg }].slice(-200))
+  $hiveTimeline.set(hiveCapTimeline([...t, { id: Math.random().toString(36).slice(2, 9), ts: Date.now(), ...msg }]))
+}
+
+/** Append the work-item cards a fold produced (task/done/review). The cards
+ *  come from hiveApplyWorkItems, so only effects that really applied land. */
+function hiveEmitWorkCards(cards, from) {
+  for (const c of cards || []) {
+    if (!c || !c.kind) continue
+    const { kind, workId, owner, reviewer, status, verdict, reason, artifact, review, text } = c
+    hiveAppendTimeline({ from, kind, text, to: null, workId, owner, reviewer, status, verdict, reason, artifact, review })
+  }
 }
 
 /** Apply parsed scratchpad ops to the shared doc. Section-addressed, so a
@@ -1342,6 +1373,10 @@ async function hiveHandleAssistantDone(e, content) {
   // (Empty-scrub turns fold to an empty done row — rare, honest, no fabrication.)
   hiveFoldTurn(member, scrubbed || parsed.broadcast || '')
 
+  // The work-item effects become timeline cards (Task/Done/Review) — real
+  // state changes only, appended after the reply they came from.
+  hiveEmitWorkCards(work.cards, from)
+
   const plan = hivePlanDeliveries({
     from,
     parsed,
@@ -1384,7 +1419,7 @@ function hiveOpenTurn(member) {
   const key = hiveNormalize(member.profile)
   const tl = $hiveTimeline.get()
   const entry = hiveTurnInit(key, Date.now())
-  $hiveTimeline.set([...tl, entry].slice(-200))
+  $hiveTimeline.set(hiveCapTimeline([...tl, entry]))
   // Auto-expand on new activity so the working agent is never hidden (SPEC B6).
   $hiveAgentExpanded.set(hiveToggleAgentExpanded($hiveAgentExpanded.get(), key, true))
   hiveMarkStatus(member.sessionId, 'streaming')
@@ -1453,7 +1488,7 @@ function hiveFoldTurn(member, finalText) {
   if (i === -1) {
     // Fallback (e.g. completed without any delta): materialize a done turn.
     const entry = hiveTurnFold(hiveTurnInit(hiveNormalize(member.profile), Date.now()), finalText || '', Date.now())
-    $hiveTimeline.set([...tl, entry].slice(-200))
+    $hiveTimeline.set(hiveCapTimeline([...tl, entry]))
     return entry
   }
   const folded = hiveTurnFold(tl[i], finalText, Date.now())
@@ -1468,7 +1503,7 @@ function hiveTurnFail(member, error) {
   const tl = $hiveTimeline.get()
   if (i === -1) {
     const entry = hiveTurnError(hiveTurnInit(hiveNormalize(member.profile), Date.now()), error, Date.now())
-    $hiveTimeline.set([...tl, entry].slice(-200))
+    $hiveTimeline.set(hiveCapTimeline([...tl, entry]))
     return
   }
   hiveReplaceTurn(i, hiveTurnError(tl[i], error, Date.now()))
@@ -1773,7 +1808,7 @@ function hivePersist() {
       provider: m.provider || null,
       modelLabel: m.modelLabel || null
     })),
-    timeline: $hiveTimeline.get().slice(-120)
+    timeline: hiveCapTimeline($hiveTimeline.get(), HIVE_TIMELINE_KEEP)
   })
 }
 
@@ -1794,7 +1829,7 @@ async function hiveBootHydrate() {
   if (typeof saved.scratch === 'string') $hiveScratch.set(saved.scratch)
   if (typeof saved.mission === 'string') $hiveMission.set(saved.mission)
   if (Array.isArray(saved.tasks)) $hiveTasks.set(saved.tasks.slice(-HIVE_TASK_KEEP))
-  if (Array.isArray(saved.timeline)) $hiveTimeline.set(saved.timeline.slice(-120))
+  if (Array.isArray(saved.timeline)) $hiveTimeline.set(hiveCapTimeline(saved.timeline, HIVE_TIMELINE_KEEP))
   const hydrated = []
   for (const m of saved.members) {
     const live = {
@@ -2297,6 +2332,8 @@ function HiveComposer() {
     if (!parsed.relays.length && parsed.broadcast) {
       hiveAppendTimeline({ from: 'you', kind: 'user', text: parsed.broadcast, to: null })
     }
+    // `you` drives the work protocol too — same cards the agents produce.
+    hiveEmitWorkCards(work.cards, 'you')
     // Same seam the agents use — one policy, so `you` can never be routed by
     // rules the room doesn't apply to everyone else.
     void hiveRunPlan(

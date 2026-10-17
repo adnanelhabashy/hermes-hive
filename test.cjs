@@ -561,6 +561,32 @@ console.log('work items (the validation spine)')
   assert('open items are surfaced to their owner', hiveFormatWorkItems(a.tasks, { profile: 'builder' }).includes('#id1'))
   deep('passed items stop nagging', hiveFormatWorkItems(ok.tasks, { profile: 'builder' }), '')
   deep('uninvolved members see no board', hiveFormatWorkItems(a.tasks, { profile: 'frontier' }), '')
+
+  // Timeline cards (§3.5): every effect that ACTUALLY applied, and nothing else.
+  deep('a task assignment emits one task card', a.cards.map((c) => c.kind), ['task'])
+  deep('the task card carries its work id', a.cards[0].workId, 'id1')
+  deep('the task card names the owner', a.cards[0].owner, 'builder')
+  assert('the task card reads as prose (no bracket marker to re-parse)',
+    !a.cards[0].text.includes('[') && a.cards[0].text.includes('audit the payment flow'))
+  deep('a review request emits a review card', r.cards.map((c) => c.kind), ['review'])
+  deep('the review card names the reviewer', r.cards[0].reviewer, 'frontier')
+  deep('a submission emits a done card', d.cards.map((c) => c.kind), ['done'])
+  deep('the done card carries the artifact', d.cards[0].artifact, 'fixed the rounding')
+  deep('the done card is in review state', d.cards[0].status, 'submitted')
+  deep('a failed verdict emits one review card', v.cards.map((c) => c.kind), ['review'])
+  deep('the failure card records the verdict', v.cards[0].verdict, 'fail')
+  deep('the failure card records the reason', v.cards[0].reason, 'off by one')
+  deep('the failure card is FAILED', v.cards[0].status, 'failed')
+  deep('a passing verdict emits a pass card', ok.cards[0].verdict, 'pass')
+  deep('a passing verdict is PASSED', ok.cards[0].status, 'passed')
+  // Unknown ids are ignored by the state machine, so they must emit nothing.
+  const orphan = hiveApplyWorkItems(a.tasks, { from: 'builder', parsed: hiveParseWorkItems('[done #nope] ghost'), ts: 8, mkId })
+  deep('an unknown work id emits no card', orphan.cards, [])
+  deep('marker-free output emits no cards', hiveApplyWorkItems([], { from: 'you', parsed: hiveParseWorkItems('just talking'), ts: 9, mkId }).cards, [])
+  const longDone = hiveApplyWorkItems(
+    [{ id: 'l1', title: 't', from: 'you', owner: 'builder', reviewer: '', status: 'open', artifact: '' }],
+    { from: 'builder', parsed: hiveParseWorkItems('[done #l1] ' + 'x'.repeat(900)), ts: 10, mkId })
+  deep('a long card artifact is clipped with an ellipsis', longDone.cards[0].artifact.length, 401)
 }
 
 console.log('scratchpad sections + corrections')
