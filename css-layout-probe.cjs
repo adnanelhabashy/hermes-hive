@@ -50,7 +50,19 @@ const m = src.match(/const HIVE_TS_CSS = `([\s\S]*?)`\n/)
 if (!m) throw new Error(`HIVE_TS_CSS not found in ${PLUGIN}`)
 const css = m[1]
 
-// Replica of TsAgentRow / TsTeamPanel: every roster row carries `.ts-team-body`.
+// The popover's own class list, lifted from the component so the replica below
+// cannot drift from the real markup: whatever `HiveAddMember` renders when open
+// is what gets measured (the defect was anchored in this exact string).
+const popMatch = src.match(/open && jsxs\('div', \{ className: '([^']+)'/)
+if (!popMatch) throw new Error(`HiveAddMember popover markup not found in ${PLUGIN}`)
+const POPOVER_CLASS = popMatch[1]
+
+// Replica of TsAgentRow / TsTeamPanel: every roster row carries `.ts-team-body`,
+// and the dock carries the Add-agent popover in its OPEN state (F-P1-R1): the
+// `.relative` wrapper + `.ts-addpop` box + the Add button, exactly as
+// `HiveAddMember` renders it. The popover is what the "shown" expectations below
+// measure — anchoring it off the column's left/bottom edge is the defect this
+// replica guards.
 const teamPanel = `<div class="ts-col ts-col-team" data-ts-team="true">
   <div class="ts-strip"><span class="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">Team</span><span class="flex-1"></span><span class="text-muted-foreground">1/11</span></div>
   <div class="ts-scroll">
@@ -59,7 +71,7 @@ const teamPanel = `<div class="ts-col ts-col-team" data-ts-team="true">
       <div class="ts-row" data-agent="default"><span class="ts-avatar">d</span><span class="ts-team-body flex min-w-0 flex-1 flex-col gap-0.5"><span class="truncate text-xs font-semibold">@default</span><span class="truncate text-muted-foreground">no model</span></span><span class="ts-team-body shrink-0 text-muted-foreground">&#9656;</span></div>
     </div>
   </div>
-  <div class="ts-dock"><span class="text-muted-foreground">0 member(s)</span></div>
+  <div class="ts-dock"><div class="relative"><div class="${POPOVER_CLASS}" data-addpop="1"><div class="text-xs font-medium">Add agent</div><input placeholder="Search profiles…"><button type="button">New profile…</button></div><button type="button">Add</button></div><span class="text-muted-foreground">0 member(s)</span></div>
 </div>`
 
 // Replica of TsRightPanel: `.ts-right-body` is a direct child of `.ts-col-right`,
@@ -100,7 +112,13 @@ const TARGETS = [
   ['sheet_right_body', '.ts-sheet[data-side="right"] > .ts-col-right > .ts-right-body'],
   ['sheet_right_tabbody', '.ts-sheet[data-side="right"] #right-tab-body'],
   ['sheet_right_rail', '.ts-sheet[data-side="right"] .ts-rail'],
-  ['narrow_only_btn', '.ts-toolbar .ts-narrow-only']
+  ['narrow_only_btn', '.ts-toolbar .ts-narrow-only'],
+  // F-P1-R1: the roster popover (class list lifted from plugin.js above), in each
+  // mount site, must be fully inside its clipping ancestors and the viewport
+  // (see the 'shown' verdict). `[data-addpop]` is a targeting hook the replica
+  // adds; the real component carries no extra attribute.
+  ['col_addpop', '.ts-workspace > .ts-col-team [data-addpop]'],
+  ['sheet_addpop', '.ts-sheet[data-side="team"] [data-addpop]']
 ]
 
 const measureScript = `
@@ -123,9 +141,26 @@ window.addEventListener('load', function () {
       if (!el) { out.nodes[name] = null; continue; }
       const cs = getComputedStyle(el);
       const r = el.getBoundingClientRect();
+      // Visible rect = the element's box intersected with every ancestor that
+      // clips (overflow != visible) and with the viewport. 'inside' is true only
+      // when nothing is subtracted — i.e. the user can see the whole box.
+      let l = r.left, t = r.top, rr = r.right, b = r.bottom;
+      for (let n = el.parentElement; n; n = n.parentElement) {
+        const ncs = getComputedStyle(n);
+        const ox = ncs.overflowX, oy = ncs.overflowY;
+        if (ox === 'visible' && oy === 'visible') continue;
+        const nr = n.getBoundingClientRect();
+        if (ox !== 'visible') { l = Math.max(l, nr.left); rr = Math.min(rr, nr.right) }
+        if (oy !== 'visible') { t = Math.max(t, nr.top); b = Math.min(b, nr.bottom) }
+      }
+      l = Math.max(l, 0); t = Math.max(t, 0);
+      rr = Math.min(rr, window.innerWidth); b = Math.min(b, window.innerHeight);
       out.nodes[name] = {
         display: cs.display, position: cs.position, overflow: cs.overflow,
-        w: Math.round(r.width * 100) / 100, h: Math.round(r.height * 100) / 100
+        w: Math.round(r.width * 100) / 100, h: Math.round(r.height * 100) / 100,
+        visibleW: Math.round(Math.max(0, rr - l) * 100) / 100,
+        visibleH: Math.round(Math.max(0, b - t) * 100) / 100,
+        inside: rr - l >= r.width - 0.5 && b - t >= r.height - 0.5
       };
     }
     document.getElementById('probe-out').textContent = JSON.stringify(out);
@@ -160,7 +195,13 @@ const EXPECT = {
   sheet_right_tabbody: (w) => (w <= 1100 ? 'vis' : 'noassert'),
   sheet_right_root: (w) => (w <= 1100 ? 'vis' : 'noassert'),
   sheet_team_root: (w) => (w <= 1100 ? 'vis' : 'noassert'),
-  sheet_team_row_body: (w) => (w <= 1100 ? 'vis' : 'noassert')
+  sheet_team_row_body: (w) => (w <= 1100 ? 'vis' : 'noassert'),
+  // F-P1-R1 — the roster popover must render fully INSIDE its mount site and the
+  // window. Anchored off the dock's left/bottom edge it measured a 69x28 px
+  // sliver (4.9%); 'shown' requires the whole box to survive every clipping
+  // ancestor. The site that is display:none at that width is not asserted.
+  col_addpop: (w) => (w <= 600 ? 'noassert' : 'shown'),
+  sheet_addpop: (w) => (w > 1100 ? 'noassert' : 'shown')
 }
 
 function verdict(node, want) {
@@ -168,6 +209,7 @@ function verdict(node, want) {
   if (!node) return 'MISSING'
   const shown = node.display !== 'none' && node.w > 0 && node.h > 0
   if (want === 'vis') return shown ? 'ok' : 'FAIL'
+  if (want === 'shown') return shown && node.inside ? 'ok' : 'FAIL'
   return node.display === 'none' ? 'ok' : 'FAIL'
 }
 
@@ -224,7 +266,7 @@ for (const { want, out } of perWidth) {
     console.log('   ' + [
       name.padEnd(20),
       (node ? node.display : '—').padEnd(10),
-      (node ? `${node.w}x${node.h}` : '—').padEnd(14),
+      (node ? `${node.w}x${node.h} vis ${node.visibleW}x${node.visibleH}` : '—').padEnd(30),
       want2.padEnd(6),
       v
     ].join(' '))

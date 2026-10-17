@@ -1991,7 +1991,22 @@ const HIVE_TS_CSS = `
 .ts-col-center{grid-column:1}
 .ts-narrow-only{display:inline-flex}
 .ts-sheet[data-open="true"]{display:block}
-}`
+}
+/* Add-agent roster popover (F-P1-R1). It mounts in the dock — the LAST row of
+   the team column and of the overlay sheet. 'right-0' anchored a 16rem box to
+   the right edge of a ~62px button, i.e. off the left of both the column and the
+   window, and 'top-9' was dead (the frozen app stylesheet ships no .top-9 rule),
+   so the box fell out of the dock's own flow and straight off the bottom edge.
+   Anchor it to the dock's inline start instead, and lift it into whichever side
+   has room: ABOVE the dock in the column (the dock is the column's bottom row)
+   and BELOW it in the sheet (the sheet's panel is content-height, pinned to the
+   sheet's top, so its dock sits near the top). */
+.ts-addpop{position:absolute;left:0;bottom:100%;z-index:40;margin-bottom:.375rem}
+.ts-sheet .ts-addpop{bottom:auto;top:100%;margin-top:.375rem;margin-bottom:0}
+/* The box is wider than the 240px column — 56px at <=860 — so while it is open
+   the column must not clip it. Scoped with :has, so the clip is only lifted
+   while the popover is actually mounted. */
+.ts-col-team:has(.ts-addpop){overflow:visible}`
 
 function hiveInjectStyles() {
   if (hiveStyleEl || typeof document === 'undefined') return
@@ -2687,7 +2702,7 @@ function HiveAddMember() {
   const pick = (p) => { void hiveMintMember(p.name); setOpen(false); setQ('') }
 
   return jsxs('div', { className: 'relative', ref: rootRef, children: [
-    open && jsxs('div', { className: 'absolute z-20 right-0 top-9 w-64 rounded-lg border bg-background p-2 shadow-lg', children: [
+    open && jsxs('div', { className: 'ts-addpop w-64 rounded-lg border bg-background p-2 shadow-lg', children: [
       jsxs('div', { className: 'mb-1 flex items-center justify-between', children: [
         jsx('div', { className: 'text-xs font-medium', children: creating ? 'New profile' : 'Add agent' }),
         jsx(Button, { variant: 'ghost', size: 'icon-micro', 'aria-label': 'Close', onClick: () => { setOpen(false); setCreating(false) }, children: jsx(icons.X, { size: 13 }) })
