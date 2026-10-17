@@ -72,3 +72,186 @@
    change). Live plugin folder untouched.
 5. Next: FORGE implements per spec (board task t_a7898aa3); SENTRY verifies
    against A1-A13.
+
+## 2026-10-17 — Phase 1 implementation complete (FORGE, board task t_a7898aa3)
+
+### Changes (branch `team-studio`, commits `d6d3a7a` → `49e4fdf`)
+
+1. `d6d3a7a` **core: Phase 1 pure helpers.** Added inside the CORE slice (so
+   test.cjs covers them with no DOM/SDK): `hiveMemberStatus` (DERIVED status —
+   offline/error/working/thinking/busy/idle), `hiveStatusTone/Label/Glyph/Busy`,
+   `hiveTaskStatusLabel/Tone`, `hiveSortTasks`, `hiveCardKind`,
+   `hiveTimelineToCards`, `hiveActivityCards`, `hiveFilterCards`,
+   `hiveBatchDeltas`, `hiveTruncatePayload`, `hiveCapTimeline`,
+   `hiveLastProfileEntry`, `hiveCardTitle`, plus the caps
+   (`HIVE_TIMELINE_MEM` 500 / `HIVE_TIMELINE_KEEP` 120 / `HIVE_PAYLOAD_MAX` /
+   `HIVE_DELTA_WINDOW_MS` 50).
+2. `77c24ea` **work items: Timeline cards.** `hiveApplyWorkItems` now also
+   returns `cards` for every effect that ACTUALLY applied (task/submission/
+   review request/verdict) — derived from the same pure fold, so a card cannot
+   claim a state change the state machine did not make. `hiveEmitWorkCards`
+   appends them at both real fold sites (agent turns, and `you`). Timeline
+   appends now go through `hiveCapTimeline`.
+3. `49e4fdf` **ui: the three-column workspace.** New atoms on the same
+   `hive.v2` blob (rightTab / dockOpen / agentDetailExpanded / activeProject /
+   teams / member.leader — absent keys keep their defaults, no migration);
+   one injected `<style>` (`buzz-hive-team-studio`) scoped entirely under
+   `.ts-*`; toolbar, Team panel, conversation feed, right tabs, bottom dock,
+   narrow-window rails/sheets; project selector, roster presets, stop-all,
+   derived workers badge, approvals badge, settings; composer Stop button;
+   delta coalescing (one 50 ms scoped timer per session) and the extended
+   `ctx.onDispose`.
+4. `smoke-render.mjs` (new, 51 checks) — see TESTS.md for what it proves.
+
+### Spikes S1-S6 — status and evidence
+
+- **S6 (SDK var list + components) — DONE by inspection of the installed
+  source** (`~/.hermes/hermes-agent/apps/desktop/src/sdk/index.ts`,
+  `src/styles.css`, `src/components/ui/*`). Canonical `--ui-*` set enumerated
+  (55 props); `Tabs/TabsList/TabsTrigger`, `StatusDot`, `ScrollArea`, `Badge`,
+  `Button`, `Select*`, `DropdownMenu*`, `Switch`, `SegmentedControl`,
+  `Input`, `Textarea`, `useQuery`, `queryClient`, `host.revealPane`,
+  `ctx.os.writeClipboard`, `ctx.runAction`, `ctx.setTimeout/setInterval` all
+  exist in the installed bundle (`app.asar.unpacked/dist/assets/sdk-*.js`).
+  Consequences handled: there is **no `Card` and no `TabsContent` export** →
+  rows are `.ts-card` and tab bodies render outside the Radix root; the design's
+  `--ui-error` / `--ui-success` / `--ui-danger` / `--ui-warning` names do **not**
+  exist → status/verdict tones use the real `--ui-red` / `--ui-yellow` /
+  `--ui-green` / `--ui-text-tertiary` (this also removed the two dead
+  `var(--ui-danger, #e5484d)` / `var(--ui-warning, #f5a524)` fallbacks, which
+  were live hardcoded colors).
+- **S3 (projects.*) — VERIFIED against the LIVE gateway**, not just by
+  registration: a standalone JSON-RPC client on the running desktop's
+  `/api/ws` returned real payloads —
+  `projects.list` → `{projects:[{id,slug,name,primary_path,board_slug,folders,…}]}`,
+  `projects.for_cwd {cwd}` → `{project,cwd,branch}`,
+  `projects.get {id}` → `{project:{…folders}}`,
+  `projects.tree` → `{projects:[…]}`.
+  `projects.set_active` was verified registered in
+  `tui_gateway/methods_projects.py:124` (`{id}` → `{active_id}`) but was
+  deliberately NOT called (it mutates the user's active project).
+- **S4 (approvals) — VERIFIED reachable against the live gateway**:
+  `approval.pending` / `approval.received` answer with a *domain* error
+  (`{code:4001,"session not found"}`) for a bogus session id, while an unknown
+  method answers `{code:-32601}` — so the methods are registered and callable.
+  Result shape confirmed in source: `{approvals:[{request_id,choices,command,…}]}`
+  (`_approval_reply` → `list_gateway_approvals`, `tools/approval.py:193`);
+  `approval.respond` takes `{session_id, choice, request_id?}` and replies
+  `{resolved}`.
+- **S5 (workflows REST) — VERIFIED live over HTTP**:
+  `GET /api/plugins/hermes-workflows/runs` → `200 {roots,runs,total,counts}`
+  (real, if empty, run list). Run row fields read from
+  `~/.hermes/plugins/hermes-workflows/dashboard/plugin_api.py:106-130`.
+- **S2 (clipboard) — resolved to the SDK door**: `ctx.os.writeClipboard(text)`
+  exists (documented, in the installed bundle). Used first, with
+  `navigator.clipboard` only as a fallback.
+- **S1 (`session.events.since`) — informational only**: it answered live
+  (`{events:[],latest_seq,open_requests}`), but Phase 1 never depends on it —
+  "View session" navigates to the native pane as the design specifies.
+
+Caveat on all four runtime probes: they were made from a standalone WS/HTTP
+client against the running backend (the headless worker cannot render the
+plugin page). `host.request` performs **no method allow-listing** — it forwards
+straight to the live gateway socket (`src/sdk/index.ts:1623`), and the plugin's
+only other door is the desktop bridge, which forwards arbitrary `/api/*` paths
+(`electron-main.mjs`) — so the plugin-context path is the same surface. The two
+remaining in-app unknowns are therefore *layout* and *live-push* behavior, both
+of which are SENTRY's.
+
+### Bugs / regressions found and handled
+
+1. **The Phase 1 default view was wrong (found by the harness).** DESIGN §3.1
+   says the chronological flat feed is the Phase 1 default, but
+   `$hiveTimelineMode` still defaulted to `agents` (grouped), so a fresh room
+   opened on collapsed per-agent sections instead of the conversation. Fixed:
+   the atom default is now `flat`. A persisted value still wins, and the
+   grouped view is unchanged and still reachable from the toggle. (No marker
+   leaked anywhere — the harness checks the rendered feed for raw `[task` /
+   `[done` / `[verdict` / `[scratchpad` text and finds none.)
+2. **`--ui-danger` / `--ui-warning` were never defined** in the app's
+   stylesheet, so the existing error/warning tones silently used hardcoded hex
+   fallbacks. Replaced with the real vars (no behavior change in dark mode,
+   correct in light).
+3. **`host.navigate` cannot open a pane** (it is a route door —
+   `src/app/routes.ts`). The design's bottom dock said "`host.navigate` to the
+   native `terminal` pane"; that would have done nothing. Implemented with
+   `host.revealPane(paneId)` (feature-detected) and `ctx.runAction(
+   'view.toggleReview' | 'view.showFiles')` for the two pane ids that have a
+   built-in plugin action, with an honest toast when neither door exists.
+4. **React 19 `key`-in-props warnings** are a *development-build* advisory; the
+   shipped renderer is production (`hermes-build.json` env NODE_ENV=production),
+   so the harness runs with NODE_ENV=production to match. No plugin churn.
+
+### Deviations from TEAM_WORKSPACE_DESIGN.md (with reasons)
+
+1. **Approvals/Workflow use the app's React Query client** (`useQuery`,
+   `queryClient`) — the design already said "React Query"; confirmed the SDK
+   exports it (§158-160 of the desktop-plugins reference), so no hand-rolled
+   poll loop.
+2. **`$tsAgentExpanded` is a NEW atom, not an extension of
+   `$hiveAgentExpanded`.** The design's table said "replaces/extends
+   `$hiveAgentExpanded` for the new panel", but that atom drives the grouped
+   TIMELINE's per-agent sections; sharing it would have coupled the left-panel
+   accordion to proven timeline behavior. Two atoms; both persisted under
+   distinct keys.
+3. **Row click toggles selection AND the accordion** in one gesture (the design
+   described them as separate affordances). One click, one state pair; the
+   chevron is the affordance.
+4. **The feed filter forces the Feed view** when a query is non-empty: the
+   By-agent sections group by speaker, so a text filter there would silently do
+   nothing.
+5. **`Card` / `Tooltip` not used** — no `Card` exists in the SDK; `title`
+   attributes (the file's existing convention) replace tooltips.
+6. **No `TsAgentMessage`/`TsDirectedMessage`/`TsToolEvent`/`TsSystemCard`
+   components.** §3.5/§9 ask for the card mapping to be DATA with a dumb switch
+   — so `TsCard` switches on `hiveCardKind` and delegates prose/turn kinds to
+   the already-proven `HiveMemberTone` / `HiveTurnRow` renderers instead of
+   reimplementing them. Only the new work cards are new components.
+7. **Removed as dead after the move:** `HiveRosterChip` (roster strip replaced
+   by the Team panel), `HiveRoomMenu` (replaced by `TsSettingsMenu`), and the old
+   flat `HiveTimeline` / `HiveTimelineBody` (replaced by `TsCardList` /
+   `TsTimelineBody`). Everything else — grouped timeline, turn row, work board,
+   scratch/SOUL editors, composer, and every pure helper — is behaviorally
+   unchanged.
+8. **Roster presets store `{profile, contextMode, model, provider}` and re-apply
+   a saved model only when it resolves to a real entry** (`hiveResolveModelEntry`
+   → the existing `/api/model/set` path). A preset that names an unresolvable
+   model mints the member without it and says so; it never fabricates a model.
+
+### Open blocker (recorded, not worked around)
+
+**F1 — hydration reattach is still broken, and the fix is NOT safe to invent.**
+`hiveBootHydrate` still calls `host.request('session.info', …)`, which is an
+event, not an RPC (ARCHITECTURE §1.2/F1), so hydrated members come back
+sessionless. Phase 1's UI now shows that state honestly: the row reads
+`offline`, the detail card says `session: none — Fresh context to start one`,
+and `Fresh context` is present as the recovery action. The two candidate fix
+paths were inspected and **not** taken: `session.list` returns stored ids only
+(no runtime id — verified live), and `session.resume` is a real backend
+ACTIVATION (`tui_gateway/methods_session.py:1049` → `_resume_eager` /
+`_resume_lazy` / `_resume_cold`, plus `restore_session_yolo`), so calling it for
+every hydrated member at plugin load would spawn N agent backends the user did
+not ask for. Per PLAN rule 4 and the task's hard rule, inventing that behavior
+is worse than recording it. **Needs a decision (ATLAS):** either add a cheap
+verified lookup, or make reattach an explicit user action per member.
+
+### Verification run (raw)
+
+```
+$ node test.cjs
+ALL PASS 283/283
+
+$ node smoke-render.mjs
+ALL PASS 51/51
+
+$ node --check plugin.js   # (as .mjs; the file is plain ESM)
+SYNTAX OK
+```
+
+### Left to SENTRY (cannot be checked headlessly)
+
+A1/A2 (real layout + breakpoints), A3 light theme (the harness proves no color
+literal and only real vars; it cannot repaint), A4 in-app Stop against a real
+session, A8 a real pending approval, A9 the Files/Workflow degraded states under
+a real failure, A12 console + duplicate-rows across disable/re-enable, A13 other
+plugins/panes unaffected.

@@ -356,6 +356,24 @@ async function inSandbox() {
   ok('the failed reason surfaced in the tab too', html.includes('routed back to the owner'))
   ok('a settled member returns to idle', html.includes('idle'))
 
+  // Scratchpad markers still land (A11) and surface as a SystemCard.
+  emit('message.start', { session_id: sid, profile: 'default' })
+  emit('message.delta', { session_id: sid, profile: 'default', payload: { text: '[scratchpad:Decisions] we ship on Friday' } })
+  runTimers()
+  advance(2000)
+  emit('message.complete', { session_id: sid, profile: 'default' })
+  await tick()
+  html = render()
+  ok('a scratchpad marker produced a system card', html.includes('updated the scratchpad'))
+  ok('the raw scratchpad marker never reaches the feed', !html.includes('[scratchpad'))
+
+  // A forced failure marks the row errored (A4's error state).
+  emit('message.start', { session_id: sid, profile: 'default' })
+  emit('error', { session_id: sid, profile: 'default', error: { message: 'boom' } })
+  html = render()
+  ok('an error event marks the member errored', html.includes('errored') && html.includes('✕'))
+  ok('the error card offers a retry', html.includes('Retry'))
+
   // Activity tab is a filtered mirror, not a second store.
   ok('the activity filter is exposed as data, not prose',
     !html.includes('data-ts-activity') || html.includes('Tools, work items and room events only'))

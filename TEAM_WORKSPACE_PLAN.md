@@ -34,7 +34,7 @@ brief; this file is the executable roadmap.
 | # | Phase | Owner | Status |
 |---|-------|-------|--------|
 | 0 | Technical audit + architecture matrix | ARCH | RUNNING |
-| 1 | Three-column UI rebuild (Team / Conversation / Tasks) | ARCH design → FORGE build → SENTRY verify | NOT STARTED |
+| 1 | Three-column UI rebuild (Team / Conversation / Tasks) | ARCH design → FORGE build → SENTRY verify | WORKING (build + unit/smoke tests done `d6d3a7a`→`49e4fdf`; in-app A1-A13 pending SENTRY) |
 | 2 | Real project workspaces (isolation, working dir) | FORGE → SENTRY | NOT STARTED |
 | 3 | ATLAS delegation protocol (real sessions, ≤2 concurrent) | FORGE → SENTRY | NOT STARTED |
 | 4 | Native Kanban adapter (durable task truth) | FORGE → SENTRY | NOT STARTED |
