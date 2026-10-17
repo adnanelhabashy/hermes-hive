@@ -1809,7 +1809,11 @@ async function hiveStopMember(profile) {
     // action): flush first, then close, so nothing is orphaned mid-window.
     hiveFlushDelta(m.sessionId)
     hiveMarkStatus(m.sessionId, 'idle')
-    hiveFoldTurn(m, undefined) // close the spine with whatever streamed so far
+    // F6: a turn an `error` already closed while we awaited the interrupt must
+    // stay closed. Folding unconditionally lands in hiveFoldTurn's no-open-turn
+    // fallback and mints an empty `done` turn beside the real error row. Stop
+    // closes a turn; it never invents one.
+    if (hiveOpenTurnIndex(m) !== -1) hiveFoldTurn(m, undefined) // close the spine with whatever streamed so far
     hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${m.profile} stopped`, to: null })
   } catch (err) {
     host.notifyError(err, `Hive: couldn't stop @${m.profile}`)
@@ -1972,18 +1976,18 @@ const HIVE_TS_CSS = `
 .ts-narrow-only{display:none}
 @media (max-width:1100px){
 .ts-workspace{grid-template-columns:var(--ts-team-w) minmax(0,1fr) 48px}
-.ts-right-body{display:none}
+.ts-workspace > .ts-col-right > .ts-right-body{display:none}
 .ts-rail{display:flex;flex-direction:column;align-items:center;gap:.25rem;padding-top:.5rem}
 .ts-narrow-only{display:inline-flex}
 .ts-sheet[data-open="true"]{display:block}
 }
 @media (max-width:860px){
 .ts-workspace{grid-template-columns:56px minmax(0,1fr) 48px}
-.ts-team-body{display:none}
+.ts-workspace > .ts-col-team .ts-team-body{display:none}
 }
 @media (max-width:600px){
 .ts-workspace{grid-template-columns:minmax(0,1fr)}
-.ts-col-team,.ts-col-right{display:none}
+.ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right{display:none}
 .ts-col-center{grid-column:1}
 .ts-narrow-only{display:inline-flex}
 .ts-sheet[data-open="true"]{display:block}

@@ -298,8 +298,14 @@ is exactly why it could not see this.
 `.ts-sheet[data-open="true"]{display:block}` and
 `.ts-narrow-only{display:inline-flex}` moved from the `≤600px` block into the
 `≤1100px` block (`plugin.js:1977-1978`); the `≤600px` copies stay for the
-single-column case. In 601–1100 px the rail's tabs and the team row detail now
-open as the overlay DESIGN §1.3 asks for.
+single-column case.
+
+**Corrected (see the R2 residual section below): this pass only made the sheet
+box appear. Its content still measured `display:none 0x0`, because the same
+media blocks also hid the sheet's own copy of the panel body. The claim that
+"the rail's tabs and the team row detail now open as the overlay DESIGN §1.3
+asks for" was wrong and is withdrawn — SENTRY measured it in Chrome
+(`TEAM_WORKSPACE_TESTS.md` §"Phase 1 — re-verification", `t_12e302ea`).**
 
 ### F1 — `TsSheet` mounted its children while closed
 
@@ -395,3 +401,155 @@ repaint, A4 in-app Stop against a real session (the source ORDER of the flush is
 asserted here; the click is not), A8 a real pending approval (the 3×→2× poll
 observation needs a live query client), A12 duplicate rows across a real
 disable/re-enable, A13 other plugins/panes.
+
+## 2026-10-17 — Phase 1 R2 residual + F6 (FORGE, board task `t_0b9b4c3d`)
+
+SENTRY's re-verification (`b3c2818`, on HEAD `224efbc`) left **R2 open**, with
+two more measured sites of the same root cause; F6 was reported non-blocking.
+This pass fixes R2 and F6 and nothing else. R1 / F1–F4 were verified fixed and
+are untouched.
+
+### R2 — the sheet opened, but hid its own payload
+
+The `≤1100px` / `≤860px` / `≤600px` hide rules were written as *bare class
+selectors*, so each one also matched the copy of the same element rendered
+INSIDE the overlay sheet:
+
+| rule | also matched |
+|---|---|
+| `.ts-right-body{display:none}` (`:1975`) | the sheet's `.ts-right-body` → the right sheet rendered only its rail |
+| `.ts-team-body{display:none}` (`:1982`) | the sheet's roster rows → no row text |
+| `.ts-col-team,.ts-col-right{display:none}` (`:1986`) | the sheet's own panel root → **both** sheets rendered nothing |
+
+Fix: each rule is scoped to the column it was always meant to hide, anchored
+with a child combinator from the workspace root. `.ts-sheet` is itself a child
+of `.ts-workspace`, so a selector anchored `> .ts-col-*` can no longer reach
+anything inside a sheet, while the column it names is unchanged:
+
+```
+.ts-right-body{display:none}                 → .ts-workspace > .ts-col-right > .ts-right-body{display:none}
+.ts-team-body{display:none}                  → .ts-workspace > .ts-col-team .ts-team-body{display:none}
+.ts-col-team,.ts-col-right{display:none}     → .ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right{display:none}
+```
+
+The two `≤600px` copies of `.ts-narrow-only` / `.ts-sheet[data-open="true"]` are
+unchanged, as the card required. Three CSS lines, one guard line, no other code.
+
+### R2 — evidence is computed layout, not a grep of the CSS text
+
+`smoke-render.mjs` applies no CSS, which is exactly how the previous pass passed
+review with the defect alive. So the layout claim is now measured by a new
+dependency-free probe, `css-layout-probe.cjs` (Node + the Chrome already on this
+machine; no new npm dep):
+
+- it extracts `HIVE_TS_CSS` **verbatim** from `plugin.js` (no copy drift),
+- builds a harness whose DOM is the class structure `TsWorkspace` renders —
+  both lazily-mounted sheets with `data-open="true"`, the roster rows that carry
+  `.ts-team-body`, the right panel's `.ts-right-body` + tab body + rail, and the
+  `.ts-narrow-only` toolbar toggles — with the app's own stylesheet linked first,
+- runs headless Chrome per viewport and reads `getComputedStyle(el).display` and
+  `getBoundingClientRect()` out of the live page.
+
+```
+$ node css-layout-probe.cjs --plugin=/tmp/plugin-r2-head.js   # 224efbc, before
+FAIL — 10 unsatisfied expectation(s)      # right-sheet body/tab body none 0x0 at 1000/700,
+                                          # team-sheet rows none at 700, both sheet roots
+                                          # none at 600 — the same three sites SENTRY measured
+$ node css-layout-probe.cjs                                   # after
+ALL PASS — every reachability expectation holds across 1000/700/600 px
+```
+
+The decisive rows (raw output in `TEAM_WORKSPACE_TESTS.md` §"R2 residual"):
+
+| viewport | sheet's `.ts-right-body` | sheet's tab body | team sheet rows | both column roots |
+|---|---|---|---|---|
+| 1000 px | `none 0x0` → **`flex 337x67`** | `0x0` → **`flex 337x19.5`** | visible | visible |
+| 700 px | `none 0x0` → **`flex 337x67`** | `0x0` → **`flex 337x19.5`** | `none 0x0` → **`flex 289x16`** | visible |
+| 600 px | `none 0x0` → **`flex 337x67`** | `0x0` → **`flex 337x19.5`** | `none 0x0` → **`flex 289x16`** | `none 0x0` → **`flex 338x144`** |
+
+What the probe does **not** prove is the app itself: it is a replica DOM driven
+by real Chrome with the real stylesheet, not a running Hermes window. The
+in-app pixel check is still SENTRY's (`TEAM_WORKSPACE_TESTS.md` §"What I still
+could not verify").
+
+`smoke-render.mjs` got 7 rows that assert the *property that failed* rather than
+the block text — every `display:none` inside a media block must be anchored
+`.ts-workspace > …`, the three rules still name the column they hide, and no
+unanchored hide rule survives for a class the sheet also renders. The file now
+says in-line that it does not measure layout.
+
+### F6 (was non-blocking) — Stop minted an empty `done` turn
+
+`hiveStopMember` awaited `session.interrupt` before its fold. An `error` for the
+session arriving during that await closed the turn, and the unguarded
+`hiveFoldTurn` then took its no-open-turn fallback and appended a fresh empty
+`done` row beside the real error row. Stop now folds only a turn that is still
+open (`plugin.js:1813`):
+
+```
+if (hiveOpenTurnIndex(m) !== -1) hiveFoldTurn(m, undefined)
+```
+
+`hiveFoldTurn` keeps its fallback — it is the legitimate path for
+`assistant.completed` with no delta (R1b) — the guard is on the user-Stop path
+only. Reproducer `sentry-probe/stop-race.mjs` before/after:
+
+```
+before: rows before Stop: 2 / after: 3 / last turn row phase after Stop: done
+        empty done turn materialized by Stop: true
+after:  rows before Stop: 2 / after: 2 / last turn row phase after Stop: error
+        empty done turn materialized by Stop: false
+```
+
+### Verification run (raw)
+
+```
+$ node test.cjs                 # in worktree/
+ALL PASS 292/292
+
+$ node smoke-render.mjs         # in worktree/
+ALL PASS 80/80                  # 72 + 7 (R2 scoping) + 1 (F6 guard)
+
+$ cp plugin.js /tmp/plugin-check.mjs && node --check /tmp/plugin-check.mjs
+SYNTAX OK
+
+$ node ../sentry-probe/probe-sentry.mjs          # R1 must not regress
+PROBE RESULT: ALL PASS 21/21
+
+$ node ../sentry-probe/stop-race.mjs             # F6
+rows after Stop:  2
+empty done turn materialized by Stop: false
+
+$ node css-layout-probe.cjs --widths=1200,1000,700,600,500
+ALL PASS — every reachability expectation holds across 1200/1000/700/600/500 px
+```
+
+The control width matters: at **1200 px** (above the band) the probe still
+measures the three columns intact — `col_right_body flex 319x737`,
+`col_team_row_body flex 191x16`, both columns `flex` — so the scoping did not
+disable the rules it scoped.
+
+### Hand-back state
+
+Committed on branch `team-studio` (**no branch switch, no push**); the commit
+hash is recorded in the kanban handoff for `t_0b9b4c3d`, and the diff to review
+is `git diff b3c2818..HEAD`.
+
+```
+plugin.js             sha256 f63a52745edb455cd39d56b7c7aa2c667938f356441af213f146ddff5b79fb9e
+smoke-render.mjs      sha256 0449477ecf6c0a2f3a3d83f6a6524fdd06df791fd6a076c912e53077e2fbfffb
+css-layout-probe.cjs  sha256 4780254779c315da6bc6460252144009fc782a06ed5740a4d2c00dc3e7ef7d30
+```
+
+`css-layout-probe.cjs` is new and untracked in the baseline; it is the runnable
+form of the R2 evidence, so SENTRY can re-measure rather than re-read.
+
+The live folder was re-checked after the pass: `git -C
+~/.hermes/desktop-plugins/buzz-hive status --porcelain` → empty, `rev-parse
+HEAD` → `929548d4a512c3072e0093b4401ecf903397b057` (= baseline).
+
+### Left to SENTRY
+
+Everything in the earlier "Left to SENTRY" list, plus: the in-app confirmation
+that a real Hermes window at 700 px and 1000 px shows a populated Work sheet and
+a populated Team sheet (the probe measures a replica DOM, not the app).

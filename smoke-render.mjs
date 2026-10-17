@@ -414,6 +414,40 @@ async function inSandbox() {
   ok('the ≤600px block still carries both rules for the single-column case',
     block600.includes('.ts-sheet[data-open="true"]{display:block}') && block600.includes('.ts-narrow-only{display:inline-flex}'), block600)
 
+  // R2 (BLOCKING, second pass): reachability is a COMPUTED outcome, and this file
+  // applies no CSS — so what it can honestly assert is the property that failed:
+  // no hide rule inside a media block may match a descendant of the overlay sheet.
+  // The sheet is a direct child of `.ts-workspace`, so a selector anchored with
+  // `.ts-workspace > ` can never reach the panel copy rendered INSIDE it.
+  console.log('R2 — the narrow-window hide rules cannot reach inside an overlay sheet')
+  const mediaRules = (block) => {
+    const inner = block.slice(block.indexOf('{') + 1, block.lastIndexOf('}'))
+    return inner.split('}').map((chunk) => {
+      const i = chunk.indexOf('{')
+      return i === -1 ? null : { sel: chunk.slice(0, i).trim(), decls: chunk.slice(i + 1).trim() }
+    }).filter(Boolean)
+  }
+  const anchored = (sel) => sel.split(',').every((one) => /^\.ts-workspace\s*>\s/.test(one.trim()))
+  const hideRules = (block) => mediaRules(block).filter((r) => /display\s*:\s*none/.test(r.decls))
+  for (const [px, block] of [[1100, block1100], [860, mediaBlock(860)], [600, block600]]) {
+    const hides = hideRules(block)
+    ok(`every ≤${px}px hide rule is anchored to the workspace (cannot match inside .ts-sheet)`,
+      hides.length > 0 && hides.every((r) => anchored(r.sel)),
+      hides.filter((r) => !anchored(r.sel)).map((r) => r.sel))
+  }
+  ok('the ≤1100px rule still hides the right column\'s own body (the rail replaces it)',
+    hideRules(block1100).some((r) => r.sel === '.ts-workspace > .ts-col-right > .ts-right-body'), hideRules(block1100).map((r) => r.sel))
+  ok('the ≤860px rule still hides the team rows\' text (the column is avatar-only there)',
+    hideRules(mediaBlock(860)).some((r) => r.sel === '.ts-workspace > .ts-col-team .ts-team-body'), hideRules(mediaBlock(860)).map((r) => r.sel))
+  ok('the ≤600px rule still hides the two side columns for the single-column grid',
+    hideRules(block600).some((r) => r.sel === '.ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right'), hideRules(block600).map((r) => r.sel))
+  ok('no unanchored display:none survives for a class the overlay sheet also renders',
+    !/(^|[},])\s*\.(ts-right-body|ts-team-body|ts-col-team|ts-col-right)\s*\{[^}]*display\s*:\s*none/.test(cssText),
+    (cssText.match(/(^|[},])\s*\.(ts-right-body|ts-team-body|ts-col-team|ts-col-right)\s*\{[^}]*display\s*:\s*none/g) || []))
+  // ...and the part a text assertion cannot decide is measured in a real browser:
+  //   node css-layout-probe.cjs     (headless Chrome, getComputedStyle + rects)
+  console.log('     (layout truth is measured by css-layout-probe.cjs, not by this file)')
+
   // R1 (BLOCKING): a delta still inside the 50 ms window must NEVER resurrect a
   // turn that already ended. The old smoke emitted `error` with no pending
   // delta, so it could not see this.
@@ -458,6 +492,12 @@ async function inSandbox() {
     stopBody.indexOf('hiveFlushDelta') !== -1 && stopBody.indexOf('hiveFlushDelta') < stopBody.indexOf('hiveFoldTurn'))
   ok('hiveFlushDelta refuses to write into a turn that already ended',
     /if \(hiveOpenTurnIndex\(member\) === -1\) return/.test(srcText))
+  // F6: Stop must CLOSE a turn, never mint one. If the `error` lands while
+  // hiveStopMember awaits session.interrupt, an unguarded fold falls into
+  // hiveFoldTurn's no-open-turn fallback and appends an empty `done` row beside
+  // the real error row. Reproducer: sentry-probe/stop-race.mjs.
+  ok('hiveStopMember folds only a turn that is still open (never materializes one)',
+    /if \(hiveOpenTurnIndex\(m\) !== -1\) hiveFoldTurn\(m, undefined\)/.test(stopBody))
   ok('no --ui-danger/--ui-warning fallback literal survives in the plugin',
     !/--ui-(danger|warning)/.test(srcText))
 

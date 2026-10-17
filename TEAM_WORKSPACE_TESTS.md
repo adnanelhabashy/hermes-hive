@@ -557,3 +557,280 @@ with the real stylesheets, but a replica DOM, not the app's own tree); a live ap
 poll against a real query client; an in-app Stop click (the ordering is asserted from
 source and driven headlessly, the click is not); light-theme repaint; a real
 disable→re-enable; other panes/plugins.
+
+
+---
+
+# Phase 1 — R2 residual + F6 fix pass (FORGE, 2026-10-17, card `t_0b9b4c3d`)
+
+Rework of the one outstanding finding (R2) plus the non-blocking F6. R1 / F1–F4
+are untouched. The R2 claim below is a **computed-layout measurement**, not a
+grep of the CSS text — the failure mode the previous pass was signed off with.
+
+## What changed
+
+```
+plugin.js  @media (max-width:1100px)
+   -.ts-right-body{display:none}
+   +.ts-workspace > .ts-col-right > .ts-right-body{display:none}
+plugin.js  @media (max-width:860px)
+   -.ts-team-body{display:none}
+   +.ts-workspace > .ts-col-team .ts-team-body{display:none}
+plugin.js  @media (max-width:600px)
+   -.ts-col-team,.ts-col-right{display:none}
+   +.ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right{display:none}
+plugin.js  hiveStopMember (F6)
+   -hiveFoldTurn(m, undefined)
+   +if (hiveOpenTurnIndex(m) !== -1) hiveFoldTurn(m, undefined)
+```
+
+The overlay sheet is a **direct child of `.ts-workspace`**, so a rule anchored
+`.ts-workspace > .ts-col-*` can no longer match the sheet's own copy of the same
+panel, while the column it names is unaffected. The two `≤600px` copies of
+`.ts-narrow-only` / `.ts-sheet[data-open="true"]` are unchanged.
+
+## Harness
+
+`css-layout-probe.cjs` (new, repo root; Node + the Chrome already installed, no
+new npm dependency):
+
+- `HIVE_TS_CSS` is extracted **verbatim from the `plugin.js` under test**
+  (`--plugin=<path>`), so there is no copy drift between the file and the probe;
+- the replica DOM is the class structure `TsWorkspace` renders: both
+  lazy-mounted sheets with `data-open="true"` exactly as the lazy mount passes
+  it, roster rows carrying `.ts-team-body`, the right panel's `.ts-right-body`,
+  its tab body and its rail, and the `.ts-narrow-only` toolbar toggles;
+- the app's own stylesheet is linked first
+  (`/Applications/Hermes.app/…/dist/assets/index-B89n1Ils.css`), then the
+  plugin's `<style>`;
+- one headless Chrome run per viewport (`--window-size=W,900`), reading
+  `getComputedStyle(el).display` and `getBoundingClientRect()` from the live page.
+
+## R2 residual — raw probe output, BEFORE (CSS of `224efbc`)
+
+`node css-layout-probe.cjs --plugin=/tmp/plugin-r2-head.js --widths=1000,700,600`
+(`/tmp/plugin-r2-head.js` = `git show HEAD:plugin.js` before this pass)
+
+```
+plugin : /tmp/plugin-r2-head.js
+css    : 3755 bytes + app stylesheet index-B89n1Ils.css
+chrome : /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+harness: /var/folders/sb/7r979fd93c1b64bzybl2s0p40000gn/T/hive-css-probe-j4cLi1/harness.html
+
+   (no measurement payload at width 700, attempt 1/3 — retrying)
+── viewport 1000px (requested 1000)  mq1100=true mq860=false mq600=false
+   target               display    w x h          expect verdict
+   workspace            grid       1000x813       noassert skip
+   toolbar              flex       1000x44        noassert skip
+   col_team             flex       240x737        vis    ok
+   col_center           flex       712x737        noassert skip
+   col_right            flex       48x737         vis    ok
+   col_team_row_body    flex       191x16         vis    ok
+   col_right_body       none       0x0            hid    ok
+   col_right_rail       flex       47x68          vis    ok
+   sheet_team           block      340x769        noassert skip
+   sheet_team_root      flex       338x144        vis    ok
+   sheet_team_row_body  flex       289x16         vis    ok
+   sheet_right          block      340x769        noassert skip
+   sheet_right_root     flex       338x68         vis    ok
+   sheet_right_body     none       0x0            vis    FAIL
+   sheet_right_tabbody  flex       0x0            vis    FAIL
+   sheet_right_rail     flex       337x68         noassert skip
+   narrow_only_btn      flex       28x28          vis    ok
+
+── viewport 700px (requested 700)  mq1100=true mq860=true mq600=false
+   target               display    w x h          expect verdict
+   workspace            grid       700x813        noassert skip
+   toolbar              flex       700x44         noassert skip
+   col_team             flex       56x737         vis    ok
+   col_center           flex       596x737        noassert skip
+   col_right            flex       48x737         vis    ok
+   col_team_row_body    none       0x0            hid    ok
+   col_right_body       none       0x0            hid    ok
+   col_right_rail       flex       47x68          vis    ok
+   sheet_team           block      340x769        noassert skip
+   sheet_team_root      flex       338x128.5      vis    ok
+   sheet_team_row_body  none       0x0            vis    FAIL
+   sheet_right          block      340x769        noassert skip
+   sheet_right_root     flex       338x68         vis    ok
+   sheet_right_body     none       0x0            vis    FAIL
+   sheet_right_tabbody  flex       0x0            vis    FAIL
+   sheet_right_rail     flex       337x68         noassert skip
+   narrow_only_btn      flex       28x28          vis    ok
+
+── viewport 600px (requested 600)  mq1100=true mq860=true mq600=true
+   target               display    w x h          expect verdict
+   workspace            grid       600x813        noassert skip
+   toolbar              flex       600x44         noassert skip
+   col_team             none       0x0            hid    ok
+   col_center           flex       600x737        noassert skip
+   col_right            none       0x0            hid    ok
+   col_team_row_body    none       0x0            hid    ok
+   col_right_body       none       0x0            hid    ok
+   col_right_rail       flex       0x0            noassert skip
+   sheet_team           block      340x769        noassert skip
+   sheet_team_root      none       0x0            vis    FAIL
+   sheet_team_row_body  none       0x0            vis    FAIL
+   sheet_right          block      340x769        noassert skip
+   sheet_right_root     none       0x0            vis    FAIL
+   sheet_right_body     none       0x0            vis    FAIL
+   sheet_right_tabbody  flex       0x0            vis    FAIL
+   sheet_right_rail     flex       0x0            noassert skip
+   narrow_only_btn      flex       28x28          vis    ok
+
+FAIL — 10 unsatisfied expectation(s)
+```
+
+The three sites SENTRY measured are reproduced exactly: right-sheet body
+`none 0x0` at 1000/700/600, right-sheet tab body `0x0`, team-sheet row bodies
+`none 0x0` at 700/600, and both sheet roots `none 0x0` at 600.
+
+## R2 residual — raw probe output, AFTER
+
+`node css-layout-probe.cjs --widths=1000,700,600`
+
+```
+plugin : /Users/adnan/Developer/hive-team-studio/worktree/plugin.js
+css    : 3848 bytes + app stylesheet index-B89n1Ils.css
+chrome : /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+harness: /var/folders/sb/7r979fd93c1b64bzybl2s0p40000gn/T/hive-css-probe-d9kb5y/harness.html
+
+── viewport 1000px (requested 1000)  mq1100=true mq860=false mq600=false
+   target               display    w x h          expect verdict
+   workspace            grid       1000x813       noassert skip
+   toolbar              flex       1000x44        noassert skip
+   col_team             flex       240x737        vis    ok
+   col_center           flex       712x737        noassert skip
+   col_right            flex       48x737         vis    ok
+   col_team_row_body    flex       191x16         vis    ok
+   col_right_body       none       0x0            hid    ok
+   col_right_rail       flex       47x68          vis    ok
+   sheet_team           block      340x769        noassert skip
+   sheet_team_root      flex       338x144        vis    ok
+   sheet_team_row_body  flex       289x16         vis    ok
+   sheet_right          block      340x769        noassert skip
+   sheet_right_root     flex       338x135        vis    ok
+   sheet_right_body     flex       337x67         vis    ok
+   sheet_right_tabbody  flex       337x19.5       vis    ok
+   sheet_right_rail     flex       337x68         noassert skip
+   narrow_only_btn      flex       28x28          vis    ok
+
+── viewport 700px (requested 700)  mq1100=true mq860=true mq600=false
+   target               display    w x h          expect verdict
+   workspace            grid       700x813        noassert skip
+   toolbar              flex       700x44         noassert skip
+   col_team             flex       56x737         vis    ok
+   col_center           flex       596x737        noassert skip
+   col_right            flex       48x737         vis    ok
+   col_team_row_body    none       0x0            hid    ok
+   col_right_body       none       0x0            hid    ok
+   col_right_rail       flex       47x68          vis    ok
+   sheet_team           block      340x769        noassert skip
+   sheet_team_root      flex       338x144        vis    ok
+   sheet_team_row_body  flex       289x16         vis    ok
+   sheet_right          block      340x769        noassert skip
+   sheet_right_root     flex       338x135        vis    ok
+   sheet_right_body     flex       337x67         vis    ok
+   sheet_right_tabbody  flex       337x19.5       vis    ok
+   sheet_right_rail     flex       337x68         noassert skip
+   narrow_only_btn      flex       28x28          vis    ok
+
+── viewport 600px (requested 600)  mq1100=true mq860=true mq600=true
+   target               display    w x h          expect verdict
+   workspace            grid       600x813        noassert skip
+   toolbar              flex       600x44         noassert skip
+   col_team             none       0x0            hid    ok
+   col_center           flex       600x737        noassert skip
+   col_right            none       0x0            hid    ok
+   col_team_row_body    none       0x0            hid    ok
+   col_right_body       none       0x0            hid    ok
+   col_right_rail       flex       0x0            noassert skip
+   sheet_team           block      340x769        noassert skip
+   sheet_team_root      flex       338x144        vis    ok
+   sheet_team_row_body  flex       289x16         vis    ok
+   sheet_right          block      340x769        noassert skip
+   sheet_right_root     flex       338x135        vis    ok
+   sheet_right_body     flex       337x67         vis    ok
+   sheet_right_tabbody  flex       337x19.5       vis    ok
+   sheet_right_rail     flex       337x68         noassert skip
+   narrow_only_btn      flex       28x28          vis    ok
+
+ALL PASS — every reachability expectation holds across 1000/700/600 px
+```
+
+## Control: the widths outside the band are unchanged
+
+`node css-layout-probe.cjs --widths=1200,1000,700,600,500` — at 1200 px (no media
+query applies) the three columns measure intact, so the scoping did not disable
+the rules it scoped:
+
+```
+── viewport 1200px (requested 1200)  mq1100=false mq860=false mq600=false
+   col_team             flex       240x737        vis    ok
+   col_right            flex       320x737        vis    ok
+   col_team_row_body    flex       191x16         vis    ok
+   col_right_body       flex       319x737        vis    ok
+   narrow_only_btn      none       0x0            hid    ok
+```
+
+and the run as a whole:
+
+```
+ALL PASS — every reachability expectation holds across 1200/1000/700/600/500 px
+```
+
+## F6 — `sentry-probe/stop-race.mjs`, before and after
+
+```
+BEFORE (224efbc):                                     AFTER (this pass):
+rows before Stop: 2   (member status: answering)      rows before Stop: 2   (member status: answering)
+rows after Stop:  3                                   rows after Stop:  2
+turn during interrupt await errored: true             turn during interrupt await errored: true
+last turn row phase after Stop: done                   last turn row phase after Stop: error
+empty done turn materialized by Stop: true             empty done turn materialized by Stop: false
+feed still shows answering…/thinking…: false          feed still shows answering…/thinking…: false
+```
+
+`hiveFoldTurn`'s no-open-turn fallback is kept — it is the legitimate path for
+`assistant.completed` with no delta (R1b) — the guard is on the user-Stop path
+only.
+
+## Commands actually run (raw tails)
+
+```
+$ node test.cjs                     # in worktree/
+  ✓ an empty error reason still reads as a failure
+
+ALL PASS 292/292
+
+$ node smoke-render.mjs             # in worktree/
+  ✓ onDispose flushed the workspace prefs to storage
+
+ALL PASS 80/80
+
+$ cp plugin.js /tmp/plugin-check.mjs && node --check /tmp/plugin-check.mjs
+SYNTAX OK
+
+$ node ../sentry-probe/probe-sentry.mjs
+  PASS  onDispose removed every listener
+
+PROBE RESULT: ALL PASS 21/21
+```
+
+`smoke-render.mjs` grew 8 rows (72 → 80) and gained no weakened assertion:
+7 of them assert the property that failed (every `display:none` inside a media
+block is anchored `.ts-workspace > …`; the three rules still name the column they
+hide; no unanchored hide rule survives for a class the sheet also renders) and 1
+asserts the F6 guard. The file now states in-line that it does not measure
+layout, and names `css-layout-probe.cjs` as the thing that does.
+
+## What this pass could NOT verify (stated plainly)
+
+- The **running app**. The R2 numbers come from real Chrome with the real
+  stylesheets, but a replica DOM — not the app's own tree, not a real plugin
+  mount. An in-app check at 700 px / 1000 px (panel body non-empty, tab content
+  visible) is still SENTRY's.
+- A real mouse click on the rail button / toolbar toggle. The probe asserts the
+  target element, not the click path.
+- A live approvals poll, light-theme repaint, real disable→re-enable, other
+  panes/plugins — unchanged from the two earlier lists.
