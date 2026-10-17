@@ -993,3 +993,237 @@ orphan status.
 `sentry-probe/harness-v2.cjs`, `measure-harness.cjs`, `scan-hidden.cjs`,
 `stop-norace.mjs`, `stop-norace2.mjs`, `stop-race-status.mjs` — dependency-free
 and runnable, so the next pass re-measures instead of re-reading.
+
+---
+
+# Phase 1 — runtime verification (buzz-hive-dev, 2026-10-17, card `t_cd258c97`, HEAD `83f1cfd`)
+
+SENTRY, fourth pass. This is the first pass with a **safe live surface**: the
+side-by-side dev copy `~/.hermes/desktop-plugins/buzz-hive-dev/plugin.js`, and
+the first pass where I could drive the running Hermes window (macOS
+accessibility tree via the desktop-control tool) and reach the gateway's real
+RPC surface. Verification only — no product file was modified.
+
+## Overall verdict
+
+**PARTIAL — 9 of 14 rows PASS on live evidence; 1 FAIL (new, reproducible);
+4 rows remain HUMAN-CHECK/partial for a stated reason.** The static rework from
+`cf40f53` holds: all three suites are green at HEAD, and for the first time the
+live RPC spikes S3/S4/S5 are reproduced by me, not quoted from FORGE.
+
+## Preconditions (checked at start AND at end)
+
+| Check | Result |
+|---|---|
+| Live folder `~/.hermes/desktop-plugins/buzz-hive/` untouched | `git rev-parse HEAD` = `929548d…`; `git status --porcelain` empty; `plugin.js` sha256 `b968e41284ac15c4f2c5ecc74c612bc4ba962148b1cdf7e0d564e4db90fad03d` — identical before and after this pass |
+| HEAD under test | `83f1cfd39e7dd8be6410924a364719d35fdf3d98` on `team-studio` |
+| `cf40f53..83f1cfd` is docs-only | `git diff --numstat` = `TEAM_WORKSPACE_PLAN.md 2/2`, `TEAM_WORKSPACE_TESTS.md 160/1` — no product file |
+| Dev surface present | `~/.hermes/desktop-plugins/buzz-hive-dev/plugin.js`, 3873 lines, sha256 `3d3329e98e82edaf9f229e242313173364e65f5c83c3df8424daa572e44d7a01` |
+| Worktree build | `plugin.js` sha256 `f63a52745edb455cd39d56b7c7aa2c667938f356441af213f146ddff5b79fb9e` (matches FORGE's published hash) |
+
+## The sync transform is faithful (this gates every other live row)
+
+Reversing the identity rewrites on the dev copy and diffing it against the
+worktree build yields **zero** lines of difference:
+
+```
+$ diff <(sed -E "s/buzz-hive-dev/buzz-hive/g; s#/hive-dev#/hive#g; \
+    s/hive-dev\.v2/hive.v2/g; s/hive-dev\.v1/hive.v1/g; \
+    s/Hive Dev/Hive/g; s/Buzz-Hive Dev/Buzz-Hive/g" \
+    ~/.hermes/desktop-plugins/buzz-hive-dev/plugin.js) \
+  ~/Developer/hive-team-studio/worktree/plugin.js
+(no output; exit 0)
+
+$ grep -n "buzz-hive" ~/.hermes/desktop-plugins/buzz-hive-dev/plugin.js | grep -v buzz-hive-dev
+  none
+```
+
+So the dev copy **is** the verified build with identity strings only — the live
+results below are evidence about `83f1cfd`, not about some other file.
+
+Rewritten identities confirmed on disk: `HIVE_PLUGIN_ID='buzz-hive-dev'` (:76),
+`HIVE_ROUTE='/hive-dev'` (:77), `HIVE_STORAGE_KEY='hive-dev.v2'` (:79),
+`HIVE_LEGACY_STORAGE_KEY='hive-dev.v1'` (:80),
+`HIVE_TS_STYLE_ID='buzz-hive-dev-team-studio'` (:1947), palette id
+`'buzz-hive-dev-open'` (:3784).
+
+## Suites re-run at HEAD (never reused)
+
+```
+$ node test.cjs                                             ALL PASS 292/292
+$ node smoke-render.mjs                                     ALL PASS  80/80
+$ node css-layout-probe.cjs --widths=1200,1000,700,600,500  ALL PASS — every
+    reachability expectation holds across 1200/1000/700/600/500 px
+```
+
+## How I reached the live RPC surface (method, no secret reproduced)
+
+The gateway authenticates its own desktop surface. The session token is minted
+by the shell and passed to the backend in its environment, so it is recoverable
+for a **read-only** probe without touching the app:
+
+```
+$ ps eww -p <backend pid> | tr ' ' '\n' | grep HERMES_DASHBOARD_SESSION_TOKEN
+$ TOKEN=<that value>; B=http://127.0.0.1:57188
+```
+
+Every probe below is `GET`/JSON-RPC-read except the one member turn I
+deliberately drove (A6/A4). `sentry-probe/spike-s3s4s5.mjs` and
+`sentry-probe/a4-session.mjs` are written to the probe folder (as in earlier
+passes it sits outside the repo, so these are runnable but untracked) so the
+next pass re-runs them instead of re-deriving them.
+
+## Live spikes S3 / S4 / S5
+
+```
+S5  GET /api/plugins/hermes-workflows/runs            HTTP 200
+    {"roots":["/Users/adnan/.hermes/workflows"],"runs":[],"total":0,
+     "counts":{"running":0,"executed":0}}
+    control, same route WITHOUT the token header      HTTP 401
+    {"detail":"Unauthorized"}
+
+S3  projects.list    -> 2 real projects, active_id p_967a0287,
+                        folders[] populated (id/slug/branch/primary_path)
+    projects.for_cwd  -> {"project":null,"cwd":".../hive-team-studio/worktree",
+                          "branch":"team-studio"}
+    model.options     -> 6 providers (the plugin's model submenu source)
+
+S4  approval.pending -> {"code":4001,"message":"session not found"}
+    control, a method that does not exist
+                     -> {"code":-32601,"message":"unknown method:
+                         bogus.method.that.does.not.exist …"}
+```
+
+The bogus-method control is the point: `approval.pending` answers with a
+*session* error, not a *method* error, so the method is registered and reachable
+from an external client on the same seam the plugin uses. S3/S4/S5 = **PASS**.
+
+## Acceptance rows
+
+| Row | Verdict | Live evidence / why not |
+|---|---|---|
+| A1 three columns at ~1512 px | **PASS (measured)** | Read off the running window's accessibility tree, not off CSS: team column anchors `TEAM` @x=36 … `3/11` @240-259, `+ Add` @36-98; centre column `Work` @276-301, filter field @996-1156; right column `WORK` @1173-1207, tab strip @1175-1439; the app's own right rail then starts at 1484. That is the designed `240px minmax(420px,1fr) 320px` — ≈240 / 888 / 320 across the ≈1448 px workspace (window 1512 px) — with no window-level scrollbar. **Other widths are harness-only** (css-layout-probe above); I did not resize the live window. |
+| A3 light theme, no hardcoded colour | **PARTIAL / HUMAN-CHECK** | Unchanged from the static pass: no literal colour in the injected stylesheet; 3 `var(--ui-danger, #e5484d)`-style fallbacks remain in reused components. A light-theme repaint cannot be judged by me — see HUMAN-CHECK steps. |
+| A4 Stop against a live session | **PARTIAL / HUMAN-CHECK** | Live: the derived Stop affordance exists and targets correctly — `Stop @arch` appeared in the composer **only while @arch was mid-turn** (@arch `thinking… 0s`, toolbar `1 working`) and was gone once the turn closed; `Stop all` is enabled only when a member holds a session. A full directed turn was driven end-to-end live (relay row → `thinking…` → `✓ done`). I did **not** land a click while a member was mid-turn: attempt 1 raced a ~12 s turn, attempt 2's window had been navigated away underneath me by concurrent use. The interrupt path itself stays covered by the F6 probes (both branches). |
+| A6 composer/mention routing + suppression | **PASS** | Autocomplete renders and is readable: typing `@a` opened a full-width list with rows `@default` and `@arch` (bounding boxes 870 px wide, both legible in the captured frame); picking `@arch` inserted the token into the composer. **Routing**: `@arch …` produced exactly one `@YOU → @ARCH ⌇ RELAY` row for @arch and nothing for @default — no broadcast fallback. **Suppression**: the depth guard rendered a live row — `⛔ held 1 relay(s) from @arch — relay chain reached its depth limit`. One nit below. |
+| A8 approvals tab live | **PARTIAL / HUMAN-CHECK** | The tab exists and switches; `approval.pending` is live-reachable from the same RPC surface the plugin uses (S4). I did not obtain a genuinely *pending* approval in a member session, so the populated row and the `hiveRespondApproval` click remain unproven in-app. |
+| A9 Files/Workflow tabs live | **PARTIAL** | Workflow tab: **live READY branch** — `data-ts-workflow="ready"`, "Read-only mirror…" + "No workflow runs yet.", consistent with the real `total: 0` payload from S5 (so it is empty-because-empty, not the degraded branch). Files tab: **degraded branch** observed ("No project selected — pick one in the toolbar…") because no project is selected in the room; its READY data path is proven live at the RPC level (`projects.list` returns `folders[]`, `projects.get` answers). I did not select a project in the room — that calls `projects.set_active` and mutates the user's global active project. |
+| A12 disable→re-enable, no duplicates | **PARTIAL / HUMAN-CHECK for the toggle cycle; two real findings** | (1) The dev copy hot-loaded **with no user decision at all**: `localStorage` carries no `hermes.desktop.pluginDecisions.v2` key, and per the SDK contract absence means "no choice", not "disabled" — so it loaded on its own default. (2) Its storage namespace is genuinely separate: `hermes.plugin.buzz-hive-dev.hive-dev.v2` next to `hermes.plugin.buzz-hive.hive.v2` (read from a copy of the app's LevelDB). Dispose is harness-asserted: `smoke-render.mjs` checks "onDispose removed every event subscription", "…removed the injected style sheet", "…flushed the workspace prefs". I did not flip the Settings → Plugins switch this pass. |
+| A13 other panes/plugins unaffected | **PASS** | With the dev plugin live, the **real Hive** rendered and behaved in the same window: `CREW 5/11 members` (you, @default, @arch, @forge, @sentry), its own toolbar, mission field and scratchpad, and importantly its `+ Add` popover rendered **in full** — search input 239 px wide, "Every profile is already in the room." 200 px wide, "New profile…" 239 px wide. So the dev copy leaks no style and does not collide. Two distinct contributions everywhere: sidebar `Hive` **and** `Hive Dev`; ⌘K `Hive: open the agent room` **and** `Hive Dev: open the agent room`; plugin inventory `Buzz-Hive Desktop plugins` **and** `Buzz-Hive Dev Desktop plugins`; distinct style id; distinct storage keys. **Not checked**: the native `/workflows` page, terminal and files panes (see "concurrent use"). |
+
+## FAIL — new, reproducible, user-visible (F-P1-R1)
+
+**The "Add agent" roster popover is drawn off the left edge of the window and
+clipped in the new team column.**
+
+Repro: open `/hive-dev`, click `+ Add` in the TEAM column's dock (the button is
+at ~(36,838,62,24)).
+
+Observed in the running app:
+
+- The popover is `absolute z-20 right-0 top-9 w-64` (`plugin.js:2690`) anchored
+  with `right-0` to a ~62 px-wide button whose right edge is x≈98, so its
+  256 px-wide box starts at x≈−158. Only its right ≈61 px is on screen.
+- What is on screen is the empty part: the `×` close button, the right end of
+  the search field as an empty violet-bordered rounded box, and two full-width
+  border lines. Every row label — `@arch`, `@forge`, `@sentry`, `New profile…` —
+  and the "Add agent" title sit off-screen.
+- Measured, not eyeballed: a row-by-row "text-like ink" scan of that band
+  (screenshot x 20-95, y 620-851) returns ink only on the border lines
+  (19 px) and window chrome — **no glyph rows** — while the same scan over the
+  team/sidebar control rows returns hundreds of ink pixels per text row. Three
+  independent reads of the captured frame by an auxiliary vision model agree
+  ("an empty input row"; "no readable rows such as @arch").
+- The clipped rows are still **clickable** — I minted @arch by pressing the
+  clipped row — so the failure mode is "you cannot read which profile you are
+  picking", i.e. a blind pick.
+
+Root cause, and the control that proves the mechanism: the identical line renders
+perfectly on the **live** page, where the Add button sits at x=1191 —
+
+| | dev team column (button at x≈36) | live `/hive` (button at x≈1191) |
+|---|---|---|
+| search field width | 61 px (clipped sliver) | **239 px** |
+| "Every profile is already in the room." | not rendered/visible | **200 px, readable** |
+| "New profile…" | 61 px sliver, label off-screen | **239 px, readable** |
+| `×` close button | visible | visible |
+
+Pre-existing code line, newly triggered by this phase's layout — I am **not**
+calling it a team-studio edit: `plugin.js:2690` is byte-identical at `929548d`
+(live copy: `:2326`) and in the worktree. What team-studio changed is *where the
+component mounts*: `git diff 929548d..83f1cfd -- plugin.js` shows only
+`-  jsx(HiveAddMember, {})` at the old site and `+ jsx(HiveAddMember, {})` in the
+new left-column dock.
+
+Suggested fix (one line, SENTRY did not apply it): anchor the popover to the
+inline start in the dock (`left-0` instead of `right-0`), or move it to the
+SDK's `Popover` with collision handling, or clamp its width to the column.
+
+## Smaller observations (non-blocking)
+
+1. **A6 nit** — a lone `@` does not open the mention picker. `HiveComposer.onChange`
+   sets `hiveMentionOpen` to `''` for the token `"@"` (slice(1) of `"@"`), and
+   `matches` returns early on `if (!open) return []`, so the list appears only
+   from a second character. The hint line "Enter ↵ send · Shift+↵ newline ·
+   @ tag · ↑↓ pick" reads as if the tag character alone opens it.
+2. The dev copy's success toast still reads **"Hive room opened."** — byte-identical
+   to the live plugin's, so on-screen the two are indistinguishable. Cosmetic;
+   `sync-dev.sh` does not rewrite that literal.
+3. `console.log` on every turn start/complete is still there (`:3793`, `:3853`) —
+   pre-existing noise, unchanged.
+
+## What I could not verify, and why (stated plainly)
+
+- **Any in-app pixel judgement.** My toolset is text-first; the screenshot bytes
+  were described by an auxiliary vision model, not read by me. A1's numbers above
+  therefore come from the accessibility tree's geometry, not from pixels, and A3's
+  light-theme repaint cannot be judged by me at all. HUMAN-CHECK steps below.
+- **A4's click, A8's populated row, A12's toggle cycle, and the native
+  `/workflows` / terminal / files panes.** The Hermes window was **in use by the
+  human during this pass**: between two of my captures it left `/hive-dev` for the
+  Quota page and later for the Kanban detail of `t_bde0e382`, and one synthetic
+  keystroke batch was dropped by the renderer (0 of 94 characters delivered).
+  I stopped driving the UI rather than fight for the window; a live click on a
+  moving target is not evidence.
+- **Out of scope but observed**: kanban card `t_bde0e382` ("Hive Team Studio P2:
+  project workspaces design") is `BLOCKED` — "Provider rejected this profile's
+  credential or model — blocked after one attempt". Worth the orchestrator's eye;
+  it is not this card's subject.
+
+## HUMAN-CHECK steps (exact, for whoever has the window)
+
+- **A3 light theme**: Settings ▸ Appearance (or `hermes config set display.skin
+  <light-skin>`), then look at `/hive-dev` and confirm the three columns, the
+  team rows' status dots and the `⛔ held …` row repaint with no white-on-white
+  or black-on-black text — in particular the danger/warning text in the team
+  detail rows, which still carries three `var(--ui-danger, #e5484d)` /
+  `var(--ui-warning, #f5a524)` fallbacks (the app defines `--ui-red`/`--ui-yellow`,
+  not those names, so the fallback hex is what paints).
+- **A4 Stop**: `/hive-dev` ▸ composer ▸ type `@arch write a 900-word essay on the
+  history of the ampersand. Do not use tools.` ▸ Enter ▸ while the row reads
+  `@ARCH thinking…`, press **Stop @arch**. Expect: the turn closes as `done` (or
+  `error` on a race), the already-streamed text stays on that row, no *new* empty
+  `done` row appears, member status returns to idle and the toolbar badge returns
+  to `ready`.
+- **A8 approvals**: have a member run an approval-gated tool, then open the
+  `Approvals` tab. Expect either the `@<profile>` card with the server's own
+  choice buttons, or — if the per-member read fails — the explicit
+  "Approval reads unavailable … Answer those in the native prompt." card. A
+  silent empty tab is a finding.
+- **A9 Files**: pick a project in the toolbar (note: this calls
+  `projects.set_active`, a real global change), then open `Files`. Expect
+  `<project> · N folder(s)` with a `primary` badge and an `Open in Files` button.
+- **A12 disable→re-enable**: Settings ▸ Plugins ▸ toggle **Buzz-Hive Dev** off and
+  back on. Expect: no duplicate `Hive Dev` nav row, no duplicate timeline rows,
+  and exactly one `<style id="buzz-hive-dev-team-studio">` in the page.
+- **A13 panes**: with the dev plugin enabled, confirm the native Workflows page,
+  terminal and files panes still render.
+
+## Probe files added this pass
+
+`sentry-probe/spike-s3s4s5.mjs` (S3/S4/S5 over the real gateway, with a
+`bogus.method` falsification control) and `sentry-probe/a4-session.mjs`
+(member-session discovery / prompt injection for an A4 retry) — both
+dependency-free, both read-only apart from the deliberate turn. They live in
+`sentry-probe/`, which is outside this repo (as in every earlier pass), so they
+are runnable but untracked.
