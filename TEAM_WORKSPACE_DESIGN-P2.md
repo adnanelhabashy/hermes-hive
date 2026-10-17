@@ -724,7 +724,11 @@ Non-regression
 
 ---
 
-## Evidence — live probe, 2026-10-18 (`p2-spike-raw.json`)
+## Evidence — live probe, 2026-10-18
+
+Runnable probe: `sentry-probe/p2-spike.mjs`; unedited output:
+`sentry-probe/p2-spike-raw.json` (re-run instructions in
+`sentry-probe/README-p2-spike.md`).
 
 Method: raw JSON-RPC over the running desktop gateway's `/api/ws` with the
 loopback session token — the same surface `host.request` forwards to
