@@ -131,7 +131,7 @@ window.addEventListener('load', function () {
       innerWidth: window.innerWidth, innerHeight: window.innerHeight,
       mq: {
         mq1100: window.matchMedia('(max-width:1100px)').matches,
-        mq860: window.matchMedia('(max-width:860px)').matches,
+        mq880: window.matchMedia('(max-width:880px)').matches,
         mq600: window.matchMedia('(max-width:600px)').matches
       },
       nodes: {}
@@ -179,29 +179,37 @@ function harnessHtml() {
 
 // 'vis'  = the element itself is not display:none and has a non-zero box
 // 'hid'  = the element itself is display:none
+// P1.5 (P-01/P-07/P-09/P-23) re-cut the ladder: the ROSTER degrades first (≤1100,
+// to avatars), the right column hands over to the 44px rail at ≤880, and under
+// 600 both columns leave the grid so the sheets are the only access. The
+// reachability property this probe guards is unchanged — only the widths moved.
 const EXPECT = {
-  // the right column's own body is replaced by the 48px rail in the 601–1100 px band
-  col_right_body: (w) => (w <= 1100 ? 'hid' : 'vis'),
-  // the team column shows avatars only once it is 56 px wide (≤860)
-  col_team_row_body: (w) => (w <= 860 ? 'hid' : 'vis'),
+  // the right column's own body is replaced by the rail in the 601–880 px band
+  col_right_body: (w) => (w <= 880 ? 'hid' : 'vis'),
+  // the team column shows avatars only once it is 56 px wide (≤1100)
+  col_team_row_body: (w) => (w <= 1100 ? 'hid' : 'vis'),
   // under 600 px both columns leave the grid — the sheets are the only access
   col_team: (w) => (w <= 600 ? 'hid' : 'vis'),
   col_right: (w) => (w <= 600 ? 'hid' : 'vis'),
-  // the rail only exists in the 601–1100 px band
-  col_right_rail: (w) => (w <= 1100 && w > 600 ? 'vis' : 'noassert'),
-  narrow_only_btn: (w) => (w <= 1100 ? 'vis' : 'hid'),
-  // and the sheets must actually deliver CONTENT wherever they are shown
-  sheet_right_body: (w) => (w <= 1100 ? 'vis' : 'noassert'),
-  sheet_right_tabbody: (w) => (w <= 1100 ? 'vis' : 'noassert'),
-  sheet_right_root: (w) => (w <= 1100 ? 'vis' : 'noassert'),
-  sheet_team_root: (w) => (w <= 1100 ? 'vis' : 'noassert'),
-  sheet_team_row_body: (w) => (w <= 1100 ? 'vis' : 'noassert'),
+  // the rail only exists in the 601–880 px band
+  col_right_rail: (w) => (w <= 880 && w > 600 ? 'vis' : 'noassert'),
+  // the toolbar toggles are the single-column fallback only
+  narrow_only_btn: (w) => (w <= 600 ? 'vis' : 'hid'),
+  // and the sheets must actually deliver CONTENT wherever they are mounted: a
+  // mounted sheet is displayed at every width (P-09 moved the display rule out of
+  // the media blocks so the 1000 px captures can show both sheets).
+  sheet_right_body: () => 'vis',
+  sheet_right_tabbody: () => 'vis',
+  sheet_right_root: () => 'vis',
+  sheet_team_root: () => 'vis',
+  // P-23: the team sheet mirrors the avatar-only column it stands in for.
+  sheet_team_row_body: (w) => (w <= 880 ? 'hid' : 'vis'),
   // F-P1-R1 — the roster popover must render fully INSIDE its mount site and the
   // window. Anchored off the dock's left/bottom edge it measured a 69x28 px
   // sliver (4.9%); 'shown' requires the whole box to survive every clipping
   // ancestor. The site that is display:none at that width is not asserted.
   col_addpop: (w) => (w <= 600 ? 'noassert' : 'shown'),
-  sheet_addpop: (w) => (w > 1100 ? 'noassert' : 'shown')
+  sheet_addpop: () => 'shown'
 }
 
 function verdict(node, want) {
@@ -256,7 +264,7 @@ for (const w of WIDTHS) {
 
 for (const { want, out } of perWidth) {
   const w = out.innerWidth
-  console.log(`── viewport ${w}px (requested ${want})  mq1100=${out.mq.mq1100} mq860=${out.mq.mq860} mq600=${out.mq.mq600}`)
+  console.log(`── viewport ${w}px (requested ${want})  mq1100=${out.mq.mq1100} mq880=${out.mq.mq880} mq600=${out.mq.mq600}`)
   console.log('   ' + ['target'.padEnd(20), 'display'.padEnd(10), 'w x h'.padEnd(14), 'expect', 'verdict'].join(' '))
   for (const [name] of TARGETS) {
     const node = out.nodes[name]

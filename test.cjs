@@ -681,9 +681,9 @@ console.log('status vocabulary + task labels')
   deep('failed → FAILED', hiveTaskStatusLabel({ status: 'failed' }), 'FAILED')
   deep('an unknown task status still reads OPEN', hiveTaskStatusLabel({}), 'OPEN')
   assert('a failed task is toned by a theme var, never a literal',
-    hiveTaskStatusTone({ status: 'failed' }).startsWith('var(--ui-'))
+    hiveTaskStatusTone({ status: 'failed' }).startsWith('var(--ts-'))
   assert('no task tone contains a color literal',
-    ['open', 'submitted', 'passed', 'failed'].every((s) => /^var\(--ui-[a-z-]+\)$/.test(hiveTaskStatusTone({ status: s }))))
+    ['open', 'submitted', 'passed', 'failed'].every((s) => /^var\(--ts-[a-z-]+\)$/.test(hiveTaskStatusTone({ status: s }))))
 
   const sorted = hiveSortTasks([
     { id: 'a', status: 'passed', ts: 5 },
@@ -781,17 +781,30 @@ console.log('payload clipping + timeline caps')
 
 console.log('hiveOrderMembers (team panel order)')
 {
+  // P-04.3: `leader` first, then the room's stable position (`order`, defaulting
+  // to insertion order), then profile name. `browser` carries NO rank: granting
+  // browser access used to silently reorder the roster (F-08/F-09).
   const room = [
     { profile: 'sentry' }, { profile: 'forge' }, { profile: 'atlas', leader: true }, { profile: 'arch', browser: true }
   ]
-  deep('leader and browser sort first, then alphabetical',
-    hiveOrderMembers(room).map((m) => m.profile), ['arch', 'atlas', 'forge', 'sentry'])
+  deep('the pinned leader sorts first, then insertion order',
+    hiveOrderMembers(room).map((m) => m.profile), ['atlas', 'sentry', 'forge', 'arch'])
+  deep('browser access alone carries no rank',
+    hiveOrderMembers([{ profile: 'b' }, { profile: 'a', browser: true }]).map((m) => m.profile), ['b', 'a'])
+  deep('an explicit order beats insertion order',
+    hiveOrderMembers([{ profile: 'a', order: 2 }, { profile: 'b', order: 1 }]).map((m) => m.profile), ['b', 'a'])
+  deep('a leader keeps the top spot whatever its order',
+    hiveOrderMembers([{ profile: 'a', order: 0 }, { profile: 'z', leader: true, order: 9 }]).map((m) => m.profile), ['z', 'a'])
+  deep('equal ranks fall back to the profile name',
+    hiveOrderMembers([{ profile: 'zed', order: 1 }, { profile: 'aaa', order: 1 }]).map((m) => m.profile), ['aaa', 'zed'])
   deep('the input array is not mutated',
     hiveOrderMembers(room).length === 4 && room[0].profile, 'sentry')
   deep('an empty roster is fine', hiveOrderMembers([]), [])
   deep('a malformed entry cannot throw', hiveOrderMembers([null, { profile: 'b' }, undefined]).length, 3)
-  deep('ordering is team-agnostic (no name is special)',
-    hiveOrderMembers([{ profile: 'zed' }, { profile: 'aaa' }]).map((m) => m.profile), ['aaa', 'zed'])
+  deep('ordering is team-agnostic (only the pin is special)',
+    hiveOrderMembers([{ profile: 'zed' }, { profile: 'aaa' }]).map((m) => m.profile), ['zed', 'aaa'])
+  deep('pinning the second member is enough to reorder',
+    hiveOrderMembers([{ profile: 'zed' }, { profile: 'aaa', leader: true }]).map((m) => m.profile), ['aaa', 'zed'])
 }
 
 console.log('turn-closing safety (R1: a buffered delta must not resurrect a closed turn)')

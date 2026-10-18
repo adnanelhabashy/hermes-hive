@@ -243,16 +243,30 @@ async function inSandbox() {
   const css = injected.get('buzz-hive-team-studio')
   ok('exactly one <style> element is injected, under a namespaced id', !!css && injected.size === 1)
   const cssText = css ? css.textContent : ''
-  ok('the stylesheet has no hex color literal', !/#[0-9a-fA-F]{3,8}\b/.test(cssText), cssText.match(/#[0-9a-fA-F]{3,8}\b/))
-  ok('the stylesheet has no rgb()/hsl() literal', !/\b(rgb|rgba|hsl|hsla)\(/.test(cssText))
+  // P1.5 (P-16/P-14): the plugin's own ramp declares the two colours that must
+  // differ per theme, and the one elevation rule declares its two shadows —
+  // those are the ONLY literals the stylesheet may carry. Everything else reads
+  // a theme var, so both themes are correct by construction.
+  const HEX_OK = ['#b1730f', '#1f5fd0', '#e0a94c', '#7aa2ff']
+  const hexHits = cssText.match(/#[0-9a-fA-F]{3,8}\b/g) || []
+  ok('the only hex literals are the ramp tokens P-16 declares',
+    hexHits.length > 0 && hexHits.every((h) => HEX_OK.includes(h.toLowerCase()))
+      && cssText.includes('--ts-warn:#b1730f;--ts-info:#1f5fd0;')
+      && cssText.includes('.dark .ts-workspace{--ts-warn:#e0a94c;--ts-info:#7aa2ff}'),
+    hexHits)
+  const rgbHits = cssText.match(/\b(rgb|rgba|hsl|hsla)\([^)]*\)/g) || []
+  ok('the only colour functions are the two elevation shadows P-14 declares',
+    rgbHits.length === 2 && rgbHits.every((s) => /^rgba\((0,0,0|24,20,40),\./.test(s)),
+    rgbHits)
   const vars = [...new Set((cssText.match(/var\((--[a-z0-9-]+)/g) || []).map((s) => s.replace('var(', '')))]
   const unknown = vars.filter((v) => !UI_VARS.has(v) && !v.startsWith('--ts-'))
   ok('every custom property it reads is a real app var or its own --ts-* prop', unknown.length === 0, unknown)
   ok('at least one real theme var is used', vars.some((v) => UI_VARS.has(v)))
   ok('no selector leaks globally (all under .ts-*)',
     !/(^|})\s*(body|html|\*|:root)\s*[,{]/.test(cssText))
-  ok('the three narrow-window breakpoints exist',
-    /max-width:1100px/.test(cssText) && /max-width:860px/.test(cssText) && /max-width:600px/.test(cssText))
+  ok('the narrow-window breakpoints exist',
+    /max-width:1240px/.test(cssText) && /max-width:1100px/.test(cssText)
+      && /max-width:880px/.test(cssText) && /max-width:600px/.test(cssText))
 
   let html = render()
   ok('the workspace root renders', html.includes('data-ts-workspace="true"'))
@@ -393,8 +407,11 @@ async function inSandbox() {
   ok('a closed overlay sheet does not mount its panel at all', !/class="ts-sheet/.test(html))
 
   // R2: the overlay sheets and the narrow-only toggles must be reachable in the
-  // 601–1100 px band too, not only under 600 px.
-  console.log('R2 — overlay reachability between 601 px and 1100 px')
+  // narrow bands too, not only under 600 px. P1.5 (P-01/P-09/P-10) re-cut the
+  // ladder — the roster degrades at 1100, the rail + a mounted sheet take over at
+  // 880, and the toolbar toggles are the single-column fallback under 600 — so
+  // these checks assert the SAME reachability property at the new widths.
+  console.log('R2 — overlay reachability in the narrow bands')
   const mediaBlock = (px) => {
     const i = cssText.indexOf(`@media (max-width:${px}px){`)
     if (i === -1) return ''
@@ -406,39 +423,53 @@ async function inSandbox() {
     return cssText.slice(i)
   }
   const block1100 = mediaBlock(1100)
+  const block880 = mediaBlock(880)
   const block600 = mediaBlock(600)
-  ok('the ≤1100px block can display the team/right overlay sheets',
-    block1100.includes('.ts-sheet[data-open="true"]{display:block}'), block1100)
-  ok('the ≤1100px block can display the narrow-only toolbar toggles',
-    block1100.includes('.ts-narrow-only{display:inline-flex}'), block1100)
-  ok('the ≤600px block still carries both rules for the single-column case',
-    block600.includes('.ts-sheet[data-open="true"]{display:block}') && block600.includes('.ts-narrow-only{display:inline-flex}'), block600)
+  ok('the ≤880px block is the band that falls back to the rail',
+    block880.includes('.ts-rail{display:flex'), block880)
+  ok('a mounted sheet is displayed at every width (the 1000px sheet captures need it)',
+    cssText.includes('.ts-sheet[data-open="true"]{display:block}')
+      && ![block1100, block880, block600].some((b) => b.includes('.ts-sheet[data-open="true"]{display:block}')))
+  ok('the ≤600px block can display the narrow-only toolbar toggles',
+    block600.includes('.ts-narrow-only{display:inline-flex}'), block600)
+  ok('the ≤1100px block degrades the roster to avatars',
+    block1100.includes('.ts-workspace > .ts-col-team .ts-team-body{display:none}'), block1100)
+  ok('the ≤880px block hides the right column body (the rail replaces it)',
+    block880.includes('.ts-workspace > .ts-col-right > .ts-right-body{display:none}'), block880)
+  ok('the ≤880px block makes the team sheet match the avatar-only column',
+    block880.includes('.ts-sheet[data-side="team"] .ts-team-body{display:none}'), block880)
 
   // R2 (BLOCKING, second pass): reachability is a COMPUTED outcome, and this file
   // applies no CSS — so what it can honestly assert is the property that failed:
-  // no hide rule inside a media block may match a descendant of the overlay sheet.
-  // The sheet is a direct child of `.ts-workspace`, so a selector anchored with
-  // `.ts-workspace > ` can never reach the panel copy rendered INSIDE it.
+  // no hide rule inside a media block may match a panel copy rendered INSIDE an
+  // overlay sheet. A rule is honest when it is anchored to a DIRECT child of
+  // `.ts-workspace` (and so can never reach `.ts-workspace > .ts-sheet > …`), or
+  // when it names the one sheet it is written for (`.ts-sheet[data-side="…"]`,
+  // the P-23 rule that makes the team sheet mirror the avatar-only column).
   console.log('R2 — the narrow-window hide rules cannot reach inside an overlay sheet')
+  const stripComments = (block) => block.replace(/\/\*[\s\S]*?\*\//g, '')
   const mediaRules = (block) => {
-    const inner = block.slice(block.indexOf('{') + 1, block.lastIndexOf('}'))
+    const inner = stripComments(block).slice(block.indexOf('{') + 1, block.lastIndexOf('}'))
     return inner.split('}').map((chunk) => {
       const i = chunk.indexOf('{')
       return i === -1 ? null : { sel: chunk.slice(0, i).trim(), decls: chunk.slice(i + 1).trim() }
     }).filter(Boolean)
   }
-  const anchored = (sel) => sel.split(',').every((one) => /^\.ts-workspace\s*>\s/.test(one.trim()))
+  const anchored = (sel) => sel.split(',').every((one) => {
+    const s = one.trim()
+    return /^\.ts-workspace\s*>\s/.test(s) || /^\.ts-sheet\[data-side="[a-z]+"\]\s/.test(s)
+  })
   const hideRules = (block) => mediaRules(block).filter((r) => /display\s*:\s*none/.test(r.decls))
-  for (const [px, block] of [[1100, block1100], [860, mediaBlock(860)], [600, block600]]) {
+  for (const [px, block] of [[1100, block1100], [880, block880], [600, block600]]) {
     const hides = hideRules(block)
-    ok(`every ≤${px}px hide rule is anchored to the workspace (cannot match inside .ts-sheet)`,
+    ok(`every ≤${px}px hide rule is anchored to the workspace or scoped to one named sheet`,
       hides.length > 0 && hides.every((r) => anchored(r.sel)),
       hides.filter((r) => !anchored(r.sel)).map((r) => r.sel))
   }
-  ok('the ≤1100px rule still hides the right column\'s own body (the rail replaces it)',
-    hideRules(block1100).some((r) => r.sel === '.ts-workspace > .ts-col-right > .ts-right-body'), hideRules(block1100).map((r) => r.sel))
-  ok('the ≤860px rule still hides the team rows\' text (the column is avatar-only there)',
-    hideRules(mediaBlock(860)).some((r) => r.sel === '.ts-workspace > .ts-col-team .ts-team-body'), hideRules(mediaBlock(860)).map((r) => r.sel))
+  ok('the ≤1100px rule still hides the team rows\' text (the column is avatar-only there)',
+    hideRules(block1100).some((r) => r.sel === '.ts-workspace > .ts-col-team .ts-team-body'), hideRules(block1100).map((r) => r.sel))
+  ok('the ≤880px rule still hides the right column\'s own body (the rail replaces it)',
+    hideRules(block880).some((r) => r.sel === '.ts-workspace > .ts-col-right > .ts-right-body'), hideRules(block880).map((r) => r.sel))
   ok('the ≤600px rule still hides the two side columns for the single-column grid',
     hideRules(block600).some((r) => r.sel === '.ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right'), hideRules(block600).map((r) => r.sel))
   ok('no unanchored display:none survives for a class the overlay sheet also renders',

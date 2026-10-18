@@ -87,14 +87,22 @@ const HIVE_DEFAULT_ACCENT = 'hsl(208 72% 56%)' // stable blue for `default`
 // Tailwind classes like text-[10px] / size-1.5 generate ZERO rules — audit
 // against app.asar.unpacked/dist/assets/index-*.css).
 
+// P1.5 type scale (six steps; the CSS census must return exactly these):
+// micro 10 (non-reading chrome) / xs 11 (meta) / sm 12 (labels, row names) /
+// md 13 (body) / lg 15 (leads) / display 20 (the empty-room heading).
+// `xs` keeps its name because every existing call site means "meta".
 const HIVE_T = Object.freeze({
   dot: { width: 6, height: 6, borderRadius: 999, flexShrink: 0 },
-  xs: { fontSize: 10, lineHeight: '14px' },
-  xsRemoveMl: { fontSize: 10, lineHeight: '14px', marginLeft: 8 },
-  sm: { fontSize: 11, lineHeight: '15px' },
+  micro: { fontSize: 10, lineHeight: '14px' },
+  xs: { fontSize: 11, lineHeight: '16px' },
+  xsRemoveMl: { fontSize: 11, lineHeight: '16px', marginLeft: 8 },
+  sm: { fontSize: 12, lineHeight: '18px' },
+  md: { fontSize: 13, lineHeight: '20px' },
+  lg: { fontSize: 15, lineHeight: '22px' },
+  display: { fontSize: 20, lineHeight: '28px' },
   streamDots: { fontSize: 10, lineHeight: 0 },
   wrap: { overflowWrap: 'anywhere', wordBreak: 'break-word' },
-  xsWrapWide: { fontSize: 10, lineHeight: '14px', overflowWrap: 'anywhere', wordBreak: 'break-word' }
+  xsWrapWide: { fontSize: 11, lineHeight: '16px', overflowWrap: 'anywhere', wordBreak: 'break-word' }
 })
 
 // ── reactive state ──────────────────────────────────────────────────────────
@@ -103,7 +111,8 @@ const $hiveTimeline = atom([]) // { id, ts, from, kind, text, to? }
 const $hiveTitle = atom('hive')
 const $hiveCwd = atom('')
 const $hiveComposer = atom('')
-const $hiveMentionOpen = atom('') // autocomplete filter when composing @name
+// null = closed; string = the filter ('' is the bare `@`, which MUST open).
+const $hiveMentionOpen = atom(null)
 const $hiveSwarm = atom(true) // agent-to-agent relays on/off
 const $hiveScratch = atom('') // shared team scratchpad (markdown), injected every turn
 // The room's standing objective. Pinned, never trimmed, shipped in EVERY
@@ -152,14 +161,19 @@ const $tsAgentSelected = atom(null) // member profile | null (not persisted)
 // the two would change proven timeline behavior.
 const $tsAgentExpanded = atom({}) // { [profile]: true }
 const $tsDockOpen = atom(false) // bottom dock expanded?
+// The add-agent popover's open state lives in an atom so the dock AND the empty
+// room's `+ Add an agent` action drive the same popover. Session-local only.
+const $tsAddOpen = atom(false)
 const $tsTeams = atom([]) // roster presets [{ name, members: [{ profile, contextMode, model, provider }] }]
 const $tsSheets = atom({ team: false, right: false }) // <600px overlay sheets
+// `icon` is what the collapsed rail (P-08) draws — a two-letter label was the
+// F-01 finding. Labels stay for the tabstrip and for title/aria-label.
 const TS_RIGHT_TABS = Object.freeze([
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'activity', label: 'Activity' },
-  { id: 'files', label: 'Files' },
-  { id: 'approvals', label: 'Approvals' },
-  { id: 'workflow', label: 'Workflow' }
+  { id: 'tasks', label: 'Tasks', icon: 'ListChecks' },
+  { id: 'activity', label: 'Activity', icon: 'Activity' },
+  { id: 'files', label: 'Files', icon: 'FolderOpen' },
+  { id: 'approvals', label: 'Approvals', icon: 'ShieldCheck' },
+  { id: 'workflow', label: 'Workflow', icon: 'Zap' }
 ])
 const TS_APPROVAL_POLL_MS = 5000
 const TS_WORKFLOW_POLL_MS = 30000
@@ -1096,13 +1110,16 @@ function hiveTaskStatusLabel(task) {
   return 'OPEN'
 }
 
-/** Theme var for a task status (var(--ui-*) only, no literals). */
+/** Theme var for a task status. Uses the plugin's OWN ramp (--ts-*), which is
+ *  defined per theme inside .ts-workspace; the app's --ui-yellow/--ui-purple
+ *  family is defined only at :root, so IN REVIEW rendered the same amber in
+ *  light and dark (F-04). No literal colour appears here. */
 function hiveTaskStatusTone(task) {
   const s = hiveTaskStatusLabel(task)
-  if (s === 'FAILED') return 'var(--ui-red)'
-  if (s === 'PASSED') return 'var(--ui-green)'
-  if (s === 'IN REVIEW') return 'var(--ui-yellow)'
-  return 'var(--ui-text-tertiary)'
+  if (s === 'FAILED') return 'var(--ts-bad)'
+  if (s === 'PASSED') return 'var(--ts-ok)'
+  if (s === 'IN REVIEW') return 'var(--ts-warn)'
+  return 'var(--ts-idle)'
 }
 
 /** Ordered task rows: open work first, then review, then settled. */
@@ -1178,16 +1195,56 @@ function hiveCardTitle(entry) {
   return hiveTruncatePayload(String(entry.text || '').replace(/\s+/g, ' ').trim(), 120)
 }
 
-/** Team-panel order: leader/browser members first, then alphabetical. Pure.
- *  ATLAS-on-top comes from the roster the user builds (leader flag), never
- *  from hardcoding a name into the plugin — the room stays team-agnostic. */
+/** Team-panel order (P-04.3): the pinned leader first, then the room's stable
+ *  persisted position (`order`, defaulting to insertion order), then the profile
+ *  name. `browser` deliberately carries NO rank: granting browser access used to
+ *  silently reorder the roster. Pure, and the input array is never mutated.
+ *  ATLAS-on-top comes from the roster the user builds (the pin), never from
+ *  hardcoding a name into the plugin — the room stays team-agnostic. */
 function hiveOrderMembers(members) {
-  return (members || []).slice().sort((a, b) => {
-    const ra = a && (a.leader === true || a.browser === true) ? 0 : 1
-    const rb = b && (b.leader === true || b.browser === true) ? 0 : 1
-    if (ra !== rb) return ra - rb
-    return String((a && a.profile) || '').localeCompare(String((b && b.profile) || ''))
-  })
+  const rank = (m, i) => {
+    if (!m || typeof m !== 'object') return i
+    const raw = Number(m.order)
+    return Number.isFinite(raw) ? raw : i
+  }
+  return (members || [])
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => {
+      const la = a.m && a.m.leader === true ? 0 : 1
+      const lb = b.m && b.m.leader === true ? 0 : 1
+      if (la !== lb) return la - lb
+      const oa = rank(a.m, a.i)
+      const ob = rank(b.m, b.i)
+      if (oa !== ob) return oa - ob
+      return String((a.m && a.m.profile) || '').localeCompare(String((b.m && b.m.profile) || ''))
+    })
+    .map((x) => x.m)
+}
+
+/** Team-strip summary (P-02): an honest count, never the internal `N/11` cap. */
+function hiveRosterSummary(count, working) {
+  const n = Number(count) || 0
+  const busy = Number(working) || 0
+  if (!n) return 'no agents yet'
+  const label = n === 1 ? '1 agent' : n + ' agents'
+  return busy > 0 ? label + ' · ' + busy + ' working' : label
+}
+
+/** Bottom-dock status line (P-13): room data, never a sentence about panes. */
+function hiveRoomStatus(count, openItems) {
+  const n = Number(count) || 0
+  const o = Number(openItems) || 0
+  return 'Room · ' + (n === 1 ? '1 agent' : n + ' agents') + ' · ' + (o === 1 ? '1 open item' : o + ' open items')
+}
+
+/** The room's most recent activity timestamp, or null (P-18 strip). Pure. */
+function hiveLastActivityTs(entries) {
+  const list = entries || []
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i]
+    if (e && e.ts) return e.ts
+  }
+  return null
 }
 
 // --CORE-END--
@@ -1665,7 +1722,14 @@ async function hiveMintMember(profile, options = {}) {
   try {
     const created = await host.request('session.create', params)
     const contextMode = hiveNormalizeContextMode(options.contextMode)
-    const member = { profile: key, sessionId: created.session_id, storedId: created.stored_session_id || null, status: 'idle', browser: false, muted: false, contextMode }
+    const member = {
+      profile: key, sessionId: created.session_id, storedId: created.stored_session_id || null,
+      status: 'idle', browser: false, muted: false, contextMode,
+      // P-04: the pin is settable AT ADD TIME (the popover row carries a toggle),
+      // and `order` is the room's stable position for the new member.
+      leader: options.leader === true,
+      order: list.length
+    }
     $hiveMembers.set([...$hiveMembers.get(), member])
     if (!$hiveMembers.get().some((m) => m.browser)) {
       $hiveMembers.set($hiveMembers.get().map((m) => (hiveNormalize(m.profile) === key ? { ...m, browser: true } : m)))
@@ -1873,6 +1937,7 @@ function hivePersist() {
       browser: m.browser,
       muted: m.muted,
       leader: m.leader === true,
+      order: Number.isFinite(Number(m.order)) ? Number(m.order) : null,
       contextMode: hiveNormalizeContextMode(m.contextMode),
       model: m.model || null,
       provider: m.provider || null,
@@ -1914,6 +1979,7 @@ async function hiveBootHydrate() {
       browser: !!m.browser,
       muted: !!m.muted,
       leader: m.leader === true,
+      order: Number.isFinite(Number(m.order)) ? Number(m.order) : null,
       contextMode: hiveNormalizeContextMode(m.contextMode),
       status: 'idle',
       sessionId: null,
@@ -1945,53 +2011,96 @@ async function hiveBootHydrate() {
 // hex/rgb literals). Sizes are px/rem/fr: no JS resize math, no observers.
 
 const HIVE_TS_STYLE_ID = 'buzz-hive-team-studio'
-const HIVE_TS_CSS = `
-.ts-workspace{--ts-team-w:240px;--ts-right-w:320px;position:relative;display:grid;grid-template-columns:var(--ts-team-w) minmax(420px,1fr) var(--ts-right-w);grid-template-rows:44px minmax(0,1fr) auto;height:100%;min-height:0;min-width:0;overflow:hidden;background:var(--ui-surface-background);color:var(--ui-text-primary)}
+const HIVE_TS_CSS = `.ts-workspace{
+  /* geometry: one set of columns, one row height (P-01) */
+  --ts-team-w:208px;--ts-right-w:280px;
+  --ts-toolbar-h:44px;--ts-strip-h:32px;--ts-dock-h:36px;--ts-row-h:40px;--ts-rail-w:44px;
+  /* space: one scale, 4px base (P-05) */
+  --ts-s1:4px;--ts-s2:8px;--ts-s3:12px;--ts-s4:16px;--ts-s5:24px;
+  /* type: six steps, two of them non-reading (P-06) */
+  --ts-f-micro:10px;--ts-lh-micro:14px;
+  --ts-f-meta:11px;--ts-lh-meta:16px;
+  --ts-f-sm:12px;--ts-lh-sm:18px;
+  --ts-f-body:13px;--ts-lh-body:20px;
+  --ts-f-lead:15px;--ts-lh-lead:22px;
+  --ts-f-display:20px;--ts-lh-display:28px;
+  /* radii: one control radius, one circle (P-15) */
+  --ts-r:6px;--ts-r-pill:999px;
+  /* motion (P-19) */
+  --ts-dur:160ms;--ts-ease:cubic-bezier(.2,.8,.2,1);
+  /* one accent budget: primary action, selection, focus (P-20/P-21) */
+  --ts-accent:var(--ui-accent);
+  /* semantic states, theme-aware by construction (P-16) */
+  --ts-ok:var(--ui-green);--ts-bad:var(--ui-red);
+  --ts-warn:#b1730f;--ts-info:#1f5fd0;--ts-idle:var(--ui-text-tertiary);
+  position:relative;display:grid;grid-template-columns:var(--ts-team-w) minmax(420px,1fr) var(--ts-right-w);grid-template-rows:var(--ts-toolbar-h) minmax(0,1fr) auto;height:100%;min-height:0;min-width:0;overflow:hidden;background:var(--ui-surface-background);color:var(--ui-text-primary)}
+.dark .ts-workspace{--ts-warn:#e0a94c;--ts-info:#7aa2ff}
+/* CJK: the Latin 13px body is below the CJK floor of 14px, so body copy steps up
+   when the app is set to a CJK language. */
+[lang^="ko"] .ts-workspace,[lang^="ja"] .ts-workspace,[lang^="zh"] .ts-workspace{--ts-f-body:14px;--ts-lh-body:22px;--ts-f-meta:12px;--ts-lh-meta:18px}
 .ts-workspace *{box-sizing:border-box}
-.ts-toolbar{grid-column:1/-1;grid-row:1;display:flex;align-items:center;gap:.375rem;min-width:0;padding:0 .5rem;border-bottom:1px solid var(--ui-stroke-secondary);overflow:hidden}
+.ts-workspace :focus-visible{outline:2px solid var(--ts-accent);outline-offset:1px;border-radius:var(--ts-r)}
+@media (prefers-reduced-motion:reduce){
+.ts-workspace *{transition-duration:.01ms!important;animation-duration:.01ms!important}
+}
+.ts-toolbar{grid-column:1/-1;grid-row:1;display:flex;align-items:center;gap:var(--ts-s2);min-width:0;min-height:var(--ts-toolbar-h);padding:0 var(--ts-s3);border-bottom:1px solid var(--ui-stroke-secondary);overflow:hidden}
+.ts-toolbar-title{max-width:280px;overflow:hidden;padding:0;border:0;background:transparent;color:var(--ui-text-primary);font-size:var(--ts-f-lead);line-height:var(--ts-lh-lead);font-weight:600;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.ts-toolbar-chip{display:inline-flex;align-items:center;gap:var(--ts-s1);height:22px;max-width:220px;padding:0 var(--ts-s2);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:transparent;color:var(--ui-text-secondary);font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
+.ts-toolbar-chip:hover{background:var(--ui-row-hover-background);color:var(--ui-text-primary)}
+.ts-toolbar-divider{width:1px;align-self:stretch;margin:var(--ts-s2) 0;background:var(--ui-stroke-secondary)}
 .ts-col{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
 .ts-col-team{grid-column:1;grid-row:2;border-right:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-secondary)}
 .ts-col-center{grid-column:2;grid-row:2}
 .ts-col-right{grid-column:3;grid-row:2;border-left:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-secondary)}
-.ts-dock{grid-column:1/-1;grid-row:3;display:flex;align-items:center;gap:.375rem;min-height:32px;padding:.25rem .5rem;border-top:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-secondary)}
-.ts-strip{display:flex;align-items:center;gap:.375rem;min-height:28px;padding:.25rem .5rem;border-bottom:1px solid var(--ui-stroke-secondary)}
+.ts-dock{grid-column:1/-1;grid-row:3;display:flex;align-items:center;gap:var(--ts-s2);min-height:var(--ts-dock-h);padding:var(--ts-s1) var(--ts-s3);border-top:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-secondary)}
+.ts-strip{display:flex;align-items:center;gap:var(--ts-s2);min-height:var(--ts-strip-h);padding:var(--ts-s1) var(--ts-s3);border-bottom:1px solid var(--ui-stroke-secondary)}
+.ts-strip-label{font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ui-text-tertiary)}
+.ts-strip-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:16px;padding:0 var(--ts-s1);border-radius:var(--ts-r);background:var(--ui-bg-tertiary);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;color:var(--ui-text-secondary)}
+.ts-strip-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ui-text-tertiary)}
 .ts-scroll{flex:1 1 auto;min-height:0}
-.ts-row{display:flex;align-items:flex-start;gap:.5rem;padding:.375rem .5rem;border-left:2px solid transparent;cursor:pointer;transition:background 120ms ease}
+.ts-row{display:flex;align-items:center;gap:var(--ts-s2);min-height:var(--ts-row-h);padding:var(--ts-s2) var(--ts-s3);border-left:2px solid transparent;cursor:pointer;transition:background var(--ts-dur) var(--ts-ease)}
+@media (hover:hover){
 .ts-row:hover{background:var(--ui-row-hover-background)}
-.ts-row[data-selected="true"]{background:var(--ui-row-active-background)}
-.ts-avatar{display:inline-flex;width:22px;height:22px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:4px;font-size:.6875rem;font-weight:600;line-height:1}
-.ts-card{border:1px solid var(--ui-stroke-secondary);border-radius:6px;background:var(--ui-bg-card);padding:.375rem .5rem}
-.ts-linkcard{display:inline-flex;align-items:center;padding:.125rem .375rem;border:1px solid var(--ui-stroke-secondary);border-radius:6px;background:var(--ui-bg-card);color:var(--ui-text-secondary);cursor:pointer;transition:background 120ms ease,color 120ms ease}
+}
+.ts-row[data-selected="true"]{background:var(--ui-bg-tertiary);box-shadow:inset 2px 0 0 var(--ts-accent)}
+.ts-row-name{font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);font-weight:600}
+.ts-row-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ts-idle)}
+.ts-chip{display:inline-flex;align-items:center;height:14px;padding:0 5px;border-radius:var(--ts-r-pill);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ts-warn);background:color-mix(in srgb, var(--ts-warn) 10%, transparent);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
+.ts-chip:hover{background:color-mix(in srgb, var(--ts-warn) 22%, transparent)}
+.ts-avatar{display:inline-flex;width:24px;height:24px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--ts-r);font-size:var(--ts-f-sm);font-weight:600;line-height:1}
+.ts-card{border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-card);padding:var(--ts-s2) var(--ts-s3)}
+.ts-linkcard{display:inline-flex;align-items:center;padding:var(--ts-s1) var(--ts-s2);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-card);color:var(--ui-text-secondary);font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
 .ts-linkcard:hover{background:var(--ui-row-hover-background);color:var(--ui-text-primary)}
 .ts-entrygroup{position:relative}
-.ts-entrygroup .ts-copy{position:absolute;top:2px;right:2px;opacity:0;transition:opacity 120ms ease}
+.ts-entrygroup .ts-copy{position:absolute;top:var(--ts-s1);right:var(--ts-s1);opacity:0;transition:opacity var(--ts-dur) var(--ts-ease)}
 .ts-entrygroup:hover .ts-copy{opacity:1}
-.ts-sheet{display:none;position:absolute;top:44px;bottom:0;z-index:30;width:min(340px,80vw);overflow:auto;background:var(--ui-bg-elevated);border:1px solid var(--ui-stroke-secondary)}
+.ts-text-body{font-size:var(--ts-f-body);line-height:var(--ts-lh-body)}
+.ts-empty{display:flex;flex-direction:column;align-items:center;gap:var(--ts-s2);max-width:320px;margin:0 auto;padding:var(--ts-s5) var(--ts-s4);text-align:center;border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-tertiary)}
+.ts-empty-title{font-size:var(--ts-f-display);line-height:var(--ts-lh-display);font-weight:600;color:var(--ui-text-primary)}
+.ts-empty-head{font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);font-weight:600;color:var(--ui-text-primary)}
+.ts-empty-body{font-size:var(--ts-f-body);line-height:var(--ts-lh-body);color:var(--ui-text-secondary)}
+.ts-empty-hint{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ts-idle)}
+.ts-tab-empty{display:flex;flex-direction:column;gap:var(--ts-s2);align-items:flex-start;padding:var(--ts-s3);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-tertiary)}
+.ts-skel{height:32px;border-radius:var(--ts-r);background:color-mix(in srgb, var(--ui-bg-tertiary) 40%, transparent)}
+.ts-sheet{display:none;position:absolute;top:var(--ts-toolbar-h);bottom:0;z-index:30;width:min(320px,80vw);overflow:auto;background:var(--ui-bg-elevated);border:1px solid var(--ui-stroke-secondary)}
 .ts-sheet[data-side="team"]{left:0}
 .ts-sheet[data-side="right"]{right:0}
 .ts-rail{display:none}
-.ts-railbutton{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:4px;color:var(--ui-text-secondary);cursor:pointer}
+.ts-rail-title{writing-mode:vertical-rl;padding-top:var(--ts-s1);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--ui-text-tertiary)}
+.ts-railbutton{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:var(--ts-r);color:var(--ui-text-secondary);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
 .ts-railbutton:hover{background:var(--ui-control-hover-background);color:var(--ui-text-primary)}
-.ts-railbutton[data-active="true"]{background:var(--ui-control-active-background);color:var(--ui-text-primary)}
+.ts-railbutton[data-active="true"]{background:var(--ui-bg-tertiary);color:var(--ui-text-primary);box-shadow:inset 2px 0 0 var(--ts-accent)}
 .ts-narrow-only{display:none}
-@media (max-width:1100px){
-.ts-workspace{grid-template-columns:var(--ts-team-w) minmax(0,1fr) 48px}
-.ts-workspace > .ts-col-right > .ts-right-body{display:none}
-.ts-rail{display:flex;flex-direction:column;align-items:center;gap:.25rem;padding-top:.5rem}
-.ts-narrow-only{display:inline-flex}
-.ts-sheet[data-open="true"]{display:block}
-}
-@media (max-width:860px){
-.ts-workspace{grid-template-columns:56px minmax(0,1fr) 48px}
-.ts-workspace > .ts-col-team .ts-team-body{display:none}
-}
-@media (max-width:600px){
-.ts-workspace{grid-template-columns:minmax(0,1fr)}
-.ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right{display:none}
-.ts-col-center{grid-column:1}
-.ts-narrow-only{display:inline-flex}
-.ts-sheet[data-open="true"]{display:block}
-}
+.ts-tabstrip{flex-wrap:wrap;height:auto;min-height:28px}
+.ts-workspace .ts-tabstrip{border-radius:var(--ts-r)}
+.ts-mention{position:absolute;bottom:100%;inset-inline-start:var(--ts-s2);z-index:20;width:min(280px,calc(100% - var(--ts-s4)));max-height:192px;overflow-y:auto;padding:var(--ts-s1);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-elevated)}
+.ts-mention-row{display:flex;align-items:center;gap:var(--ts-s2);width:100%;padding:var(--ts-s1) var(--ts-s2);border-left:2px solid transparent;border-radius:var(--ts-r);background:transparent;color:var(--ui-text-primary);font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);font-weight:600;text-align:left;cursor:pointer;transition:background var(--ts-dur) var(--ts-ease)}
+.ts-mention-row:hover{background:var(--ui-row-hover-background)}
+.ts-mention-row[data-active="true"]{background:var(--ui-bg-tertiary);box-shadow:inset 2px 0 0 var(--ts-accent)}
+.ts-mention-model{margin-left:auto;font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);font-weight:400;color:var(--ts-idle)}
+/* one elevation rule, floating surfaces only (P-14) */
+.ts-sheet,.ts-addpop,.ts-mention{box-shadow:0 8px 24px -12px rgba(0,0,0,.45)}
+:root:not(.dark) .ts-sheet,:root:not(.dark) .ts-addpop,:root:not(.dark) .ts-mention{box-shadow:0 8px 24px -12px rgba(24,20,40,.14)}
 /* Add-agent roster popover (F-P1-R1). It mounts in the dock — the LAST row of
    the team column and of the overlay sheet. 'right-0' anchored a 16rem box to
    the right edge of a ~62px button, i.e. off the left of both the column and the
@@ -2000,13 +2109,67 @@ const HIVE_TS_CSS = `
    Anchor it to the dock's inline start instead, and lift it into whichever side
    has room: ABOVE the dock in the column (the dock is the column's bottom row)
    and BELOW it in the sheet (the sheet's panel is content-height, pinned to the
-   sheet's top, so its dock sits near the top). */
-.ts-addpop{position:absolute;left:0;bottom:100%;z-index:40;margin-bottom:.375rem}
-.ts-sheet .ts-addpop{bottom:auto;top:100%;margin-top:.375rem;margin-bottom:0}
-/* The box is wider than the 240px column — 56px at <=860 — so while it is open
-   the column must not clip it. Scoped with :has, so the clip is only lifted
-   while the popover is actually mounted. */
-.ts-col-team:has(.ts-addpop){overflow:visible}`
+   sheet's top, so its dock sits near the top). P-22 narrows it to its column. */
+.ts-addpop{position:absolute;inset-inline-start:var(--ts-s2);bottom:100%;z-index:40;margin-bottom:var(--ts-s2);width:min(232px,calc(var(--ts-team-w) - var(--ts-s4)));padding:var(--ts-s2);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-elevated)}
+/* Inside a sheet the popover's containing block is its own trigger wrapper (a
+   ~34px button), so a percentage width collapsed the box to 18px — the same
+   "sliver" defect F-P1-R1 fixed in the column. Bound it to the sheet's own width
+   instead: .ts-sheet is min(320px,80vw), so 80vw minus one gutter always fits. */
+.ts-sheet .ts-addpop{bottom:auto;top:100%;margin-top:var(--ts-s2);margin-bottom:0;width:min(232px,calc(80vw - var(--ts-s4)))}
+.ts-addpop-search{position:sticky;top:0;z-index:1;margin-bottom:var(--ts-s1);background:var(--ui-bg-elevated)}
+.ts-addpop-row{display:flex;align-items:center;gap:var(--ts-s2);width:100%;padding:var(--ts-s1) var(--ts-s2);border-radius:var(--ts-r);background:transparent;color:var(--ui-text-primary);font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);text-align:left;cursor:pointer;transition:background var(--ts-dur) var(--ts-ease)}
+.ts-addpop-row:hover{background:var(--ui-row-hover-background)}
+.ts-addpop-pin{margin-left:auto;padding:0 var(--ts-s1);border-radius:var(--ts-r);color:var(--ui-text-tertiary);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);cursor:pointer}
+.ts-addpop-pin[data-on="true"]{color:var(--ts-warn);font-weight:600}
+/* The box is wider than the 48px column at <=880 — so while it is open the
+   column must not clip it. Scoped with :has, so the clip is only lifted while
+   the popover is actually mounted. */
+.ts-col-team:has(.ts-addpop){overflow:visible}
+/* P-07: once the roster column is avatar-only it reports itself with a count
+   badge instead of a sentence that no longer fits. */
+.ts-col-team .ts-strip-count{display:none}
+/* P-09/P-23: a mounted sheet is shown. Sheet mounting is already lazy (F1), so
+   the data-open="true" attribute is the only state a rendered sheet can be in —
+   keeping this rule out of a single media block is what lets the 1000px QA
+   capture render both sheets while the columns are still on screen, and what
+   makes the sheets reachable across the whole 601-880 band where the rail owns
+   the Work panel. */
+.ts-sheet[data-open="true"]{display:block}
+/* Degradation ladder (P-01/P-07/P-09): degrade the ROSTER first (it degrades
+   honestly to avatars); the Work column keeps its labels down to 880. */
+@media (max-width:1240px){
+.ts-workspace{--ts-team-w:208px;--ts-right-w:240px}
+}
+@media (max-width:1100px){
+.ts-workspace{--ts-team-w:56px;--ts-right-w:240px}
+.ts-workspace > .ts-col-team .ts-team-body{display:none}
+.ts-workspace > .ts-col-team .ts-strip-label{display:none}
+.ts-workspace > .ts-col-team .ts-strip-meta{display:none}
+.ts-workspace > .ts-col-team .ts-strip-count{display:inline-flex}
+}
+@media (max-width:880px){
+.ts-workspace{--ts-team-w:48px;--ts-right-w:var(--ts-rail-w)}
+.ts-workspace > .ts-col-right > .ts-right-body{display:none}
+.ts-rail{display:flex;flex-direction:column;align-items:center;gap:var(--ts-s1);padding-top:var(--ts-s2)}
+/* P-23: the team sheet mirrors the column it stands in for, so it goes
+   avatar-only at the same width. These are scoped to the sheet EXPLICITLY — the
+   column rules above are anchored to a direct workspace child and therefore
+   still cannot reach a panel copy rendered inside an overlay sheet. */
+.ts-sheet[data-side="team"] .ts-team-body{display:none}
+.ts-sheet[data-side="team"] .ts-strip-label{display:none}
+.ts-sheet[data-side="team"] .ts-strip-meta{display:none}
+.ts-sheet[data-side="team"] .ts-strip-count{display:inline-flex}
+}
+@media (max-width:600px){
+.ts-workspace{grid-template-columns:minmax(0,1fr)}
+.ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right{display:none}
+.ts-col-center{grid-column:1}
+/* Both columns have left the grid, so the toolbar toggles are the only way to
+   reach the roster / Work sheets. Above 600 the rail (≤880) or the columns
+   themselves own those jobs and these stay out of the toolbar (P-10). */
+.ts-narrow-only{display:inline-flex}
+}
+`
 
 function hiveInjectStyles() {
   if (hiveStyleEl || typeof document === 'undefined') return
@@ -2461,9 +2624,11 @@ function HiveComposer() {
   const timeline = useValue($hiveTimeline)
   const ref = useRef(null)
   const [active, setActive] = useState(0)
-  const q = open.toLowerCase()
+  // P-21: `open` is null when closed and a string ('' = the bare `@`) when open,
+  // so the filter must be null-safe — a bare `@` opens the picker with everything.
+  const q = String(open || '').trim().toLowerCase()
   const matches = useMemo(() => {
-    if (!open) return []
+    if (open === null || open === undefined) return []
     return members.map((m) => '@' + m.profile).concat(['@you']).filter((n) => n.toLowerCase().includes(q)).slice(0, 6)
   }, [open, members])
   // The member a Stop would interrupt: the selected one when it is mid-turn,
@@ -2729,7 +2894,9 @@ function HiveWorkBoard() {
     return jsx('div', { className: 'rounded-md border border-dashed p-2 text-muted-foreground', style: HIVE_T.xs,
       children: 'No open work items. Assign one with [task @name] …, then ask for a check with [review @name #id].' })
   }
-  const tone = (s) => (s === 'failed' ? 'var(--ui-red)' : s === 'submitted' ? 'var(--ui-yellow)' : undefined)
+  // P-16: the plugin's own theme-aware ramp, never the app's :root-only
+  // --ui-yellow/--ui-purple family (which renders identically in both themes).
+  const tone = (s) => hiveTaskStatusTone({ status: s })
   return jsx('div', { className: 'flex flex-col gap-1', children: open.map((t) =>
     jsxs('div', { key: t.id, className: 'flex items-center gap-2 rounded-md border px-2 py-1', style: HIVE_T.xs, children: [
       jsx('span', { className: 'font-mono text-muted-foreground', children: '#' + t.id }),
@@ -3035,9 +3202,11 @@ function TsRoomTitle() {
       onKeyDown: (ev) => { if (ev.key === 'Enter') commit() }
     })
   }
-  return jsx(Badge, {
-    variant: 'muted', className: 'cursor-pointer',
-    title: 'Rename room', onClick: () => { setDraft(title); setEditing(true) },
+  // The room name is the toolbar's one lead (--ts-f-lead/600). It was a muted
+  // Badge, i.e. the smallest thing in the row while being the most important.
+  return jsx('button', {
+    type: 'button', className: 'ts-toolbar-title', title: 'Rename room',
+    onClick: () => { setDraft(title); setEditing(true) },
     children: title
   })
 }
@@ -3062,7 +3231,7 @@ function TsProjectSelect() {
             value: active ? 'p:' + active.id : 'none',
             onValueChange: pick,
             children: [
-              jsx(SelectTrigger, { className: 'h-6 max-w-56 min-w-32 text-xs', children: jsx(SelectValue, { placeholder: 'No project' }) }),
+              jsx(SelectTrigger, { className: 'ts-toolbar-chip', children: jsx(SelectValue, { placeholder: 'No project' }) }),
               jsx(SelectContent, {
                 children: [
                   jsx(SelectItem, { value: 'none', children: 'No project' }),
@@ -3071,10 +3240,19 @@ function TsProjectSelect() {
               })
             ]
           })
-        : jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: err ? 'Projects unavailable' : 'Loading projects…' }),
-      active && jsx(Badge, { variant: 'outline', size: 'xs', children: active.branch || 'no branch' }),
+        // The dead string "Projects unavailable" told the user nothing they could
+        // act on: the chip now reads `No project` and opens the native pane.
+        : jsx('button', {
+            type: 'button', className: 'ts-toolbar-chip', 'data-ts-project-chip': true,
+            title: 'Open the native Projects pane',
+            onClick: () => host.navigate('/projects'),
+            children: jsxs('span', { className: 'min-w-0 truncate', children: err ? 'No project — open Projects' : 'No project' })
+          }),
+      active && active.branch
+        ? jsx('span', { className: 'ts-strip-meta shrink-0', children: active.branch })
+        : null,
       active && active.primaryPath
-        ? jsx('span', { className: 'truncate text-muted-foreground', style: { ...HIVE_T.xs, maxWidth: 180 }, title: active.primaryPath, children: active.primaryPath })
+        ? jsx('span', { className: 'ts-strip-meta truncate', style: { maxWidth: 180 }, title: active.primaryPath, children: active.primaryPath })
         : null
     ]
   })
@@ -3193,11 +3371,17 @@ function TsToolbar() {
       jsx(TsRoomTitle, {}),
       jsx(TsProjectSelect, {}),
       jsx('span', { className: 'flex-1' }),
-      jsx(TsTeamPresetMenu, {}),
-      jsx(TsRoomControls, {}),
       jsx(TsWorkersBadge, {}),
       jsx(TsApprovalsBadge, {}),
+      jsx(TsTeamPresetMenu, {}),
       jsx(TsSettingsMenu, {}),
+      // The destructive pair is visually separated and Reset is the only
+      // `destructive` control (P-10): one action group, one dangerous thing.
+      jsx('span', { className: 'ts-toolbar-divider' }),
+      jsx(TsRoomControls, {}),
+      // Below 600px both columns leave the grid, so the sheets are the ONLY way
+      // to reach the roster / Work panel; above that the columns and the rail
+      // own those jobs and these two icon-only buttons stay out of the toolbar.
       jsx('button', {
         type: 'button', className: 'ts-narrow-only ts-railbutton', title: 'Team', 'aria-label': 'Team panel',
         onClick: () => $tsSheets.set({ team: !sheets.team, right: false }),
@@ -3216,46 +3400,115 @@ function TsToolbar() {
 
 function TsAgentDetail({ m, status, turn }) {
   const tasks = useValue($hiveTasks)
+  const [details, setDetails] = useState(false)
   const key = hiveNormalize(m.profile)
   const mine = hiveSortTasks((tasks || []).filter(
     (t) => t && t.status !== 'passed' && (hiveNormalizeOpt(t.owner) === key || hiveNormalizeOpt(t.reviewer) === key)
   ))
+  const current = mine[0] || null
   const sessionRef = m.storedId || m.sessionId || null
-  const action = (label, onClick, opts = {}) => jsx(Button, {
-    variant: opts.variant || 'outline', size: 'xs', disabled: !!opts.disabled, title: opts.title || label, onClick,
-    children: label
-  })
+  const elapsed = turn ? hiveFmtDur((turn.doneAt || Date.now()) - turn.startedAt) : null
+  const menuItem = (label, onClick, extra = {}) => jsx(DropdownMenuItem, { onSelect: onClick, ...extra, children: label })
+  const metaLine = `model: ${m.model ? `${m.provider || '?'} / ${m.modelLabel || m.model}` : 'profile default'} · context: ${hiveNormalizeContextMode(m.contextMode)} · session: ${m.sessionId ? 'live' : (sessionRef ? 'stored' : 'none')}`
   return jsxs('div', {
-    className: 'ts-card m-1 flex flex-col gap-1.5', 'data-ts-agent-detail': m.profile,
+    className: 'ts-card m-1 flex flex-col gap-2', 'data-ts-agent-detail': m.profile,
     children: [
-      jsxs('div', { className: 'flex flex-col gap-0.5', style: HIVE_T.xs, children: [
-        jsxs('span', { className: 'text-muted-foreground', children: ['model: ', jsx('span', { className: 'text-(--ui-text-primary)', children: m.model ? `${m.provider || '?'} / ${m.modelLabel || m.model}` : 'inherits the profile default' })] }),
-        jsxs('span', { className: 'text-muted-foreground', children: ['context: ', jsx('span', { className: 'text-(--ui-text-primary)', children: hiveNormalizeContextMode(m.contextMode) })] }),
-        jsxs('span', { className: 'text-muted-foreground', children: ['session: ', jsx('span', { className: 'text-(--ui-text-primary)', children: sessionRef || 'none — Fresh context to start one' })] }),
-        jsxs('span', { className: 'text-muted-foreground', children: ['status: ', jsx('span', { className: 'text-(--ui-text-primary)', children: hiveStatusLabel(status) })] }),
-        turn && jsxs('span', { className: 'text-muted-foreground', children: ['this turn: ', jsx('span', { className: 'text-(--ui-text-primary)', children: hiveFmtDur((turn.doneAt || Date.now()) - turn.startedAt) })] })
+      // 1. Content first: what this agent is doing, on its own full-width line.
+      //    The work-item title used to be truncated to 114px behind five
+      //    metadata rows and seven equal-weight buttons (F-06).
+      jsxs('div', { className: 'flex flex-col gap-1', children: [
+        jsxs('div', { className: 'flex items-center gap-2', children: [
+          jsx('span', { className: 'ts-strip-label', children: 'What it is doing' }),
+          jsx('span', { className: 'flex-1' }),
+          jsx('span', { className: 'ts-strip-meta shrink-0', children: [hiveStatusLabel(status), elapsed ? ' · ' + elapsed : ''].join('') })
+        ] }),
+        jsx('div', {
+          className: 'ts-text-body', style: HIVE_T.wrap,
+          children: current ? current.title : 'No open work item — this member is idle.'
+        }),
+        current
+          ? jsxs('div', { className: 'flex items-center gap-1.5 ts-strip-meta', children: [
+              jsx('span', { className: 'font-mono', children: '#' + current.id }),
+              jsx('span', { style: { color: hiveTaskStatusTone(current) }, className: 'font-semibold', children: hiveTaskStatusLabel(current) }),
+              hiveNormalizeOpt(current.reviewer) === key && hiveNormalizeOpt(current.owner) !== key
+                ? jsx('span', { children: '· reviewing' }) : null,
+              jsx('span', { className: 'ml-auto shrink-0', children: hiveFmtDur(Date.now() - (current.ts || Date.now())) })
+            ] })
+          : null,
+        mine.length > 1
+          ? jsxs('div', { className: 'flex flex-col gap-1', children: mine.slice(1).map((t) => jsxs('div', {
+              key: t.id, className: 'flex flex-col gap-0.5', 'data-ts-workitem': t.id,
+              children: [
+                jsxs('div', { className: 'flex items-center gap-1.5 ts-strip-meta', children: [
+                  jsx('span', { className: 'font-mono', children: '#' + t.id }),
+                  jsx('span', { style: { color: hiveTaskStatusTone(t) }, className: 'font-semibold', children: hiveTaskStatusLabel(t) }),
+                  hiveNormalizeOpt(t.reviewer) === key && hiveNormalizeOpt(t.owner) !== key
+                    ? jsx('span', { children: '· reviewing' }) : null
+                ] }),
+                jsx('div', { className: 'ts-row-name truncate', title: t.title, children: t.title }),
+                jsx('div', { className: 'ts-strip-meta truncate', children: [
+                  `@${t.owner}${t.reviewer ? ' → @' + t.reviewer : ' · unreviewed'}`,
+                  ' · ' + hiveFmtDur(Date.now() - (t.ts || Date.now()))
+                ].join('') })
+              ]
+            })) })
+          : null
       ] }),
-      jsxs('div', { className: 'flex flex-col gap-0.5', children: [
-        jsx('span', { className: 'font-medium text-muted-foreground', style: HIVE_T.xs, children: 'Open work items' }),
-        mine.length
-          ? mine.map((t) => jsxs('div', { key: t.id, className: 'flex items-center gap-1.5', style: HIVE_T.xs, children: [
-              jsx('span', { className: 'font-mono text-muted-foreground', children: '#' + t.id }),
-              jsxs('span', { style: { color: hiveTaskStatusTone(t) }, className: 'font-semibold', children: [hiveTaskStatusLabel(t), hiveNormalizeOpt(t.reviewer) === key && hiveNormalizeOpt(t.owner) !== key ? ' · reviewing' : ''] }),
-              jsx('span', { className: 'min-w-0 flex-1 truncate', title: t.title, children: t.title })
-            ] }))
-          : jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'None.' })
+      // 2. One metadata line + a Details disclosure (the duplicated
+      //    context/model rows that used to sit here are gone).
+      jsxs('div', { className: 'flex items-center gap-2', children: [
+        jsx('span', { className: 'ts-strip-meta min-w-0 flex-1 truncate', title: metaLine, children: metaLine }),
+        jsx(Button, {
+          variant: 'ghost', size: 'xs', 'aria-expanded': details ? 'true' : 'false',
+          title: 'Session, model and context controls',
+          onClick: () => setDetails(!details),
+          children: 'Details'
+        })
       ] }),
+      details
+        ? jsxs('div', { className: 'flex flex-col gap-1', 'data-ts-agent-details': m.profile, children: [
+            jsx('span', { className: 'ts-strip-meta break-words', children: sessionRef || 'no session yet — Fresh context starts one' }),
+            jsx(HiveContextModeControl, { m }),
+            jsx(HiveModelSubmenu, { m })
+          ] })
+        : null,
+      // 3. Three visible controls; everything reversible lives in the overflow,
+      //    Remove last behind a separator so nothing destructive neighbours Stop.
       jsxs('div', { className: 'flex flex-wrap items-center gap-1', children: [
-        action('Stop', () => void hiveStopMember(m.profile), { variant: 'outline', disabled: status === 'idle' || status === 'offline', title: 'Interrupt this session (session.interrupt)' }),
-        action('View session', () => { if (sessionRef) host.navigate('/' + encodeURIComponent(sessionRef)) }, { disabled: !sessionRef, title: 'Open the native sessions pane on this session' }),
-        action(m.muted ? 'Unmute' : 'Mute', () => void hiveToggleMute(m.profile), {}),
-        action(m.browser ? 'Release browser' : 'Grant browser', () => void hiveSetBrowser(m.profile, !m.browser), {}),
-        action(m.leader ? 'Clear leader' : 'Mark leader', () => hiveSetLeader(m.profile), { title: 'Sort this member to the top of the panel' }),
-        action('Fresh context', () => void hiveFreshContext(m.profile), { title: 'Drop the session and mint a new one' }),
-        action('Remove', () => void hiveRemoveMember(m.profile), { variant: 'destructive', title: 'Remove from the room' })
-      ] }),
-      jsx(HiveContextModeControl, { m }),
-      jsx(HiveModelSubmenu, { m })
+        jsx(Button, {
+          variant: 'outline', size: 'xs', disabled: status === 'idle' || status === 'offline',
+          title: 'Interrupt this session (session.interrupt)',
+          onClick: () => void hiveStopMember(m.profile),
+          children: 'Stop'
+        }),
+        jsx(Button, {
+          variant: 'outline', size: 'xs', disabled: !sessionRef,
+          title: 'Open the native sessions pane on this session',
+          onClick: () => { if (sessionRef) host.navigate('/' + encodeURIComponent(sessionRef)) },
+          children: 'View session'
+        }),
+        jsx(DropdownMenu, { children: [
+          jsx(DropdownMenuTrigger, { asChild: true, children: jsx(Button, {
+            variant: 'outline', size: 'xs', title: 'More actions', 'aria-label': `More actions for @${m.profile}`,
+            children: '…'
+          }) }),
+          jsx(DropdownMenuContent, {
+            align: 'start',
+            children: [
+              menuItem(m.muted ? 'Unmute' : 'Mute', () => void hiveToggleMute(m.profile)),
+              menuItem(m.browser ? 'Release browser' : 'Grant browser', () => void hiveSetBrowser(m.profile, !m.browser)),
+              // Honest label (P-04): the flag sorts a member to the top; it does
+              // not grant a coordination role, and the tooltip says so.
+              menuItem(m.leader ? 'Unpin' : 'Pin to top', () => hiveSetLeader(m.profile), {
+                title: 'Pins this member to the top of the roster. Coordination roles arrive in Phase 3.'
+              }),
+              menuItem('Fresh context', () => void hiveFreshContext(m.profile), { title: 'Drop the session and mint a new one' }),
+              jsx(DropdownMenuSeparator, { key: 'sep' }),
+              menuItem('Remove', () => void hiveRemoveMember(m.profile), { className: 'text-destructive' })
+            ]
+          })
+        ] })
+      ] })
     ]
   })
 }
@@ -3263,8 +3516,10 @@ function TsAgentDetail({ m, status, turn }) {
 function TsAgentRow({ m, status, turn, open }) {
   const selected = useValue($tsAgentSelected)
   const isSelected = hiveNormalize(selected || '') === hiveNormalize(m.profile)
+  // Name line: dot · @profile · pin chip · browser glyph · busy glyph.
+  // Meta line: model · last activity · duration — no role mojibake, and the
+  // leader flag is visible as a chip instead of a word buried in the meta line.
   const meta = [
-    m.leader ? 'leader' : null,
     m.muted ? 'muted' : null,
     m.model ? (m.modelLabel || m.model) : 'no model',
     turn ? hiveFmtDur((turn.doneAt || Date.now()) - turn.startedAt) : null
@@ -3283,13 +3538,16 @@ function TsAgentRow({ m, status, turn, open }) {
       jsxs('span', { className: 'ts-team-body flex min-w-0 flex-1 flex-col gap-0.5', children: [
         jsxs('span', { className: 'flex min-w-0 items-center gap-1.5', children: [
           jsx(TsStatusDot, { status }),
-          jsx('span', { className: 'truncate text-xs font-semibold', children: '@' + m.profile }),
-          m.browser && jsx(icons.Globe, { size: 11, className: 'shrink-0 text-muted-foreground' }),
-          hiveStatusGlyph(status) ? jsx('span', { className: cn('shrink-0', hiveStatusBusy(status) && 'animate-pulse'), style: { ...HIVE_T.xs, color: status === 'error' ? 'var(--ui-red)' : undefined }, children: hiveStatusGlyph(status) }) : null
+          jsx('span', { className: 'ts-row-name truncate', children: '@' + m.profile }),
+          m.leader ? jsx('span', { className: 'ts-chip', title: 'Pinned to the top of the roster', children: 'Pinned' }) : null,
+          m.browser ? jsx(icons.Globe, { size: 11, className: 'shrink-0 text-muted-foreground' }) : null,
+          hiveStatusGlyph(status)
+            ? jsx('span', { className: cn('shrink-0', hiveStatusBusy(status) && 'animate-pulse'), style: { ...HIVE_T.xs, color: status === 'error' ? 'var(--ts-bad)' : undefined }, children: hiveStatusGlyph(status) })
+            : null
         ] }),
-        jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: meta })
+        jsx('span', { className: 'ts-row-meta truncate', children: meta })
       ] }),
-      jsx('span', { className: 'ts-team-body shrink-0 text-muted-foreground', style: HIVE_T.xs, children: open ? '▾' : '▸' })
+      jsx('span', { className: 'ts-team-body shrink-0 ts-row-meta', children: open ? '▾' : '▸' })
     ]
   })
 }
@@ -3299,13 +3557,16 @@ function TsTeamPanel() {
   const timeline = useValue($hiveTimeline)
   const expanded = useValue($tsAgentExpanded)
   const ordered = useMemo(() => hiveOrderMembers(members), [members])
+  const working = members.filter((m) => hiveStatusBusy(hiveMemberStatus(m, timeline))).length
   return jsxs('div', {
     className: 'ts-col ts-col-team', 'data-ts-team': true,
     children: [
       jsxs('div', { className: 'ts-strip', children: [
-        jsx('span', { className: 'text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground', children: 'Team' }),
+        jsx('span', { className: 'ts-strip-label', children: 'Team' }),
         jsx('span', { className: 'flex-1' }),
-        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: `${members.length + 1}/11` })
+        // ≤1100 (avatar-only): the count badge. Above: the honest sentence.
+        jsx('span', { className: 'ts-strip-count', title: hiveRosterSummary(members.length, working), children: String(members.length) }),
+        jsx('span', { className: 'ts-strip-meta', children: hiveRosterSummary(members.length, working) })
       ] }),
       jsx(ScrollArea, {
         className: 'ts-scroll',
@@ -3314,8 +3575,8 @@ function TsTeamPanel() {
             jsx(TsAgentAvatar, { profile: 'you' }),
             jsxs('span', { className: 'ts-team-body flex min-w-0 flex-1 items-center gap-1.5', children: [
               jsx(StatusDot, { tone: 'good' }),
-              jsx('span', { className: 'text-xs font-semibold', children: 'you' }),
-              jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: 'always delivers' })
+              jsx('span', { className: 'ts-row-name', children: 'you' }),
+              jsx('span', { className: 'ts-row-meta truncate', children: 'always delivers' })
             ] })
           ] }),
           ordered.map((m) => {
@@ -3331,7 +3592,7 @@ function TsTeamPanel() {
       }),
       jsx('div', { className: 'ts-dock', children: [
         jsx(HiveAddMember, {}),
-        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: members.length >= HIVE_MAX_MEMBERS ? `Room full (${HIVE_MAX_MEMBERS})` : `${members.length} member(s)` })
+        jsx('span', { className: 'ts-team-body ts-strip-meta', children: members.length >= HIVE_MAX_MEMBERS ? `Room full (${HIVE_MAX_MEMBERS})` : `${members.length} member(s)` })
       ] })
     ]
   })
