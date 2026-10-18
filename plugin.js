@@ -2626,10 +2626,13 @@ function HiveTimelineModeToggle({ right }) {
 
 /** Coordination grammar shortcuts — the bracket syntax agents actually speak
  *  (SPEC B8 discoverability). Clicking inserts the template into the composer. */
+// P-21: a chip starts the FLOW, it does not paste a placeholder. `[to `/`[ask `
+// open the picker (filter '', every member); `[all] ` has no argument, so it
+// only inserts.
 const HIVE_GRAMMAR_HINTS = Object.freeze([
-  { id: 'to', label: '[to @name]', tpl: '[to @name]' },
-  { id: 'ask', label: '[ask @name]', tpl: '[ask @name]' },
-  { id: 'all', label: '[all]', tpl: '[all]' }
+  { id: 'to', label: '[to @name]', tpl: '[to ', open: true },
+  { id: 'ask', label: '[ask @name]', tpl: '[ask ', open: true },
+  { id: 'all', label: '[all]', tpl: '[all] ', open: false }
 ])
 
 function HiveComposer() {
@@ -2661,7 +2664,7 @@ function HiveComposer() {
     if (!text.trim()) return
     haptic('tap')
     $hiveComposer.set('')
-    $hiveMentionOpen.set('')
+    $hiveMentionOpen.set(null)
     setActive(0)
 
     // You can drive the work protocol too: `[task @builder] …` from the
@@ -2692,22 +2695,28 @@ function HiveComposer() {
 
   const onChange = (v) => {
     $hiveComposer.set(v)
-    const toks = v.split(/\s+/)
-    $hiveMentionOpen.set((toks[toks.length - 1] || '').startsWith('@') ? toks[toks.length - 1].slice(1) : '')
+    // P-21: `null` is CLOSED and any string (including '') is OPEN. A
+    // trailing `@word` filters, a bare `@` opens the picker unfiltered, and
+    // every other keystroke CLOSES it — using '' for "closed" here left the
+    // picker open for the whole session.
+    const tail = v.split(/\s+/).pop() || ''
+    $hiveMentionOpen.set(tail.startsWith('@') ? tail.slice(1) : null)
     setActive(0)
   }
 
   const pickMention = (name) => {
     const toks = $hiveComposer.get().split(/\s+/)
     toks[toks.length - 1] = name + ' '
-    $hiveComposer.set(toks.join(' ')); $hiveMentionOpen.set(''); setActive(0); ref.current?.focus?.()
+    $hiveComposer.set(toks.join(' ')); $hiveMentionOpen.set(null); setActive(0); ref.current?.focus?.()
   }
 
-  const insertTemplate = (tpl) => {
+  const insertTemplate = (h) => {
     const cur = $hiveComposer.get()
     const sep = cur && !cur.endsWith(' ') ? ' ' : ''
-    $hiveComposer.set(cur + sep + tpl + ' ')
-    setActive(0); ref.current?.focus?.()
+    $hiveComposer.set(cur + sep + h.tpl)
+    setActive(0)
+    $hiveMentionOpen.set(h.open ? '' : null)
+    ref.current?.focus?.()
   }
 
   const onKeyDown = (ev) => {
@@ -2715,7 +2724,7 @@ function HiveComposer() {
       if (ev.key === 'ArrowDown') { ev.preventDefault(); setActive((a) => (a + 1) % matches.length); return }
       if (ev.key === 'ArrowUp') { ev.preventDefault(); setActive((a) => (a - 1 + matches.length) % matches.length); return }
       if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); pickMention(matches[active] || matches[0]); return }
-      if (ev.key === 'Escape') { ev.preventDefault(); $hiveMentionOpen.set(''); return }
+      if (ev.key === 'Escape') { ev.preventDefault(); $hiveMentionOpen.set(null); return }
     }
     if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(composer) }
   }
@@ -2724,18 +2733,28 @@ function HiveComposer() {
     className: 'relative border-t p-2 flex flex-col gap-1.5',
     'data-hive-composer': true,
     children: [
-      open && matches.length > 0 && jsx('div', {
-        className: 'absolute bottom-full left-2 right-2 z-20 max-h-48 overflow-y-auto rounded-md border bg-background p-1 shadow-lg',
+      // P-21: `open &&` was truthy-tested against '' — the bare-`@` state —
+      // so the closed sentinel is checked explicitly. Rows use the roster
+      // anatomy and the active row is edge-marked, never a filled slab.
+      open !== null && open !== undefined && matches.length > 0 && jsx('div', {
+        className: 'ts-mention',
         'data-hive-mentions': true,
-        children: matches.map((name, i) => jsx(Button, {
-          key: name,
-          variant: i === active ? 'default' : 'ghost',
-          size: 'sm',
-          className: 'w-full justify-start text-xs',
-          onMouseEnter: () => setActive(i),
-          onClick: () => pickMention(name),
-          children: name
-        }))
+        children: matches.map((name, i) => {
+          const profile = name.slice(1)
+          const m = members.find((x) => hiveNormalize(x.profile) === hiveNormalize(profile))
+          const { color } = hiveAccent(profile)
+          return jsx('button', {
+            key: name, type: 'button', className: 'ts-mention-row',
+            'data-active': i === active ? 'true' : 'false',
+            onMouseEnter: () => setActive(i),
+            onClick: () => pickMention(name),
+            children: [
+              jsx('span', { className: 'shrink-0 rounded-full', style: { ...HIVE_T.dot, background: color } }),
+              jsx('span', { className: 'min-w-0 truncate', children: name }),
+              jsx('span', { className: 'ts-mention-model', children: m && m.model ? (m.modelLabel || m.model) : 'no model' })
+            ]
+          })
+        })
       }),
       // grammar hint chips — insert the bracket syntax agents understand
       jsx('div', { className: 'flex flex-wrap items-center gap-1', children: [
@@ -2744,7 +2763,7 @@ function HiveComposer() {
           key: h.id, variant: 'ghost', size: 'sm',
           className: 'h-5 px-1.5', style: HIVE_T.xs,
           title: `Insert ${h.label} — agents read this as a directed message`,
-          onClick: () => insertTemplate(h.tpl),
+          onClick: () => insertTemplate(h),
           children: h.label
         }))
       ] }),
