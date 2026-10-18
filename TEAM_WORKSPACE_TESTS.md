@@ -1309,3 +1309,45 @@ residual bare "buzz-hive" lines in dev copy                       : 0
 
 So `/hive-dev` is the worktree build under an invertible identity transform, and a live capture
 there is evidence for `00934f2`. (Captures below are harness renders of the same file; see §C.)
+
+### B. Evidence-path finding: the harness DOM is stale at the before revision
+
+Before taking any after-capture, the capture harness itself was audited, because the
+`p15-*` captures on disk (Oct 18 14:53, design round) were produced by it and the
+contract's §3 tells the QA round to re-run the same command.
+
+`sentry-probe/p15-harness.cjs` links the app's real stylesheet and extracts
+`HIVE_TS_CSS` **verbatim from the plugin under test** (so the CSS layer is whatever
+revision is on disk), but its DOM is a hand-written replica, last written 14:53 —
+i.e. at the **before** revision. Comparing the after stylesheet's class vocabulary
+against the class vocabulary actually present in the harness body:
+
+```
+CSS classes in plugin.js @00934f2 : 47
+ts-* classes present in harness body : 22
+in CSS but absent from the harness DOM (28):
+  ts-chip ts-empty ts-empty-body ts-empty-head ts-empty-hint ts-empty-title
+  ts-toolbar-chip ts-toolbar-divider ts-toolbar-title ts-strip-label
+  ts-strip-count ts-strip-meta ts-addpop-pin ts-addpop-row ts-addpop-search
+  ts-mention ts-mention-model ts-mention-row ts-row-name ts-row-meta
+  ts-rail-title ts-tab-empty ts-tabstrip ts-skel ts-text-body ts-copy
+```
+
+Every one of those is a contract deliverable: `ts-chip` is P-03/P-04's leader chip,
+`ts-empty-*` is P-17's taught empty state, `ts-toolbar-chip`/`-divider`/`-title` is
+P-10's toolbar hierarchy, `ts-strip-label`/`-count`/`-meta` is P-02, `ts-addpop-pin`
+is P-22's per-row pin toggle, `ts-row-name`/`-meta` is P-03's row anatomy.
+
+**Consequence:** re-running `node p15-render.cjs` unchanged renders the *after*
+stylesheet over the *before* DOM. Such a capture can show the token/CSS layer
+(type scale, spacing values, colours, media-query regimes) but is structurally
+incapable of showing the JSX-level contract items (leader chip, toolbar anatomy,
+designed empty states, row anatomy, pin toggle, mention picker rows) — and the
+"measured, not eyeballed" type census would be measuring the harness's own inline
+`style="font-size:…"` values on many nodes rather than the plugin's `HIVE_T`.
+
+So the harness is used below only for what it can honestly measure (the CSS/token
+layer and the width regimes, with the census re-read against real generated
+markup), and the structural + qualitative judgement is taken from the **live
+`/hive-dev` render**, whose transform faithfulness is verified in §A. Anything the
+round cannot evidence is named as a blocker rather than scored around.
