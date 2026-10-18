@@ -277,7 +277,13 @@ async function inSandbox() {
   ok('the pinned `you` roster row renders', html.includes('data-role="you"'))
   ok('the right panel offers all five tabs',
     ['Tasks', 'Activity', 'Files', 'Approvals', 'Workflow'].every((t) => html.includes(t)))
-  ok('the Tasks tab states the honest native-kanban gap', html.includes('Durable tasks live in native Kanban'))
+  ok('the Tasks tab states what it is and links the durable board (P-18/P-24)',
+    html.includes('This room\u2019s work items. The durable board is the app\u2019s own Kanban board.')
+    && html.includes('Kanban board')
+    && !html.includes('ask an agent'))
+  ok('the bottom dock reports the room, not the panes (P-13)',
+    html.includes('data-ts-dock-status') && html.includes('Room ·') && !html.includes('Native terminal / logs'))
+  ok('the Work header carries the room readout (P-18)', html.includes('open item'))
   ok('the composer still renders', html.includes('data-testid="hive-composer"'))
   ok('the project selector reads the real projects.list payload', html.includes('demo'))
 

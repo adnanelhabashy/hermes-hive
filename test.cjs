@@ -836,5 +836,36 @@ console.log('turn-closing safety (R1: a buffered delta must not resurrect a clos
     hiveTurnError(hiveTurnInit('default', 1000), '', 2000).error, 'turn failed')
 }
 
+console.log('room readouts (P-13 dock, P-18 Work header — data, never a sentence)')
+{
+  deep('the dock names the room, its agents and its open items',
+    hiveRoomStatus(3, 2, ''), 'Room · 3 agents · 2 open items')
+  deep('singular counts stay singular', hiveRoomStatus(1, 1, ''), 'Room · 1 agent · 1 open item')
+  deep('last activity is appended only when there is a clock to read',
+    hiveRoomStatus(0, 0, '11:56 PM'), 'Room · 0 agents · 0 open items · last activity 11:56 PM')
+  assert('the dock never narrates panes or says "member(s)"',
+    !/pane|member\(s\)/.test(hiveRoomStatus(2, 0, '')))
+
+  deep('the Work header leads with the open count', hiveWorkSummary(2, ''), '2 open items')
+  deep('and appends last activity when it has one', hiveWorkSummary(1, '11:56 PM'),
+    '1 open item · last activity 11:56 PM')
+  deep('no clock, no tail', hiveWorkSummary(0, ''), '0 open items')
+
+  deep('a passed item is settled; everything else counts as open',
+    hiveOpenItemCount([{ status: 'passed' }, { id: 2, status: 'in review' }]), 1)
+  deep('a malformed task cannot inflate the count',
+    hiveOpenItemCount([null, undefined, { status: 'passed' }, { id: 9, status: 'submitted' }]), 1)
+  deep('no tasks is zero, not NaN', hiveOpenItemCount(undefined), 0)
+
+  deep('last activity is the newest entry carrying a timestamp',
+    hiveLastActivityTs([{ ts: 1 }, { text: 'no ts of its own' }, { ts: 7 }]), 7)
+  deep('an untouched room has no last activity', hiveLastActivityTs([]), null)
+
+  deep('the roster summary is an honest count, never the internal cap',
+    hiveRosterSummary(3, 1), '3 agents · 1 working')
+  deep('a quiet room reads as quiet', hiveRosterSummary(2, 0), '2 agents')
+  deep('an empty room says so', hiveRosterSummary(0, 0), 'no agents yet')
+}
+
 console.log('\n' + (fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`))
 process.exit(fail ? 1 : 0)
