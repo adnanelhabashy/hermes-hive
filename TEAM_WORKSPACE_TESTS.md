@@ -1351,3 +1351,66 @@ layer and the width regimes, with the census re-read against real generated
 markup), and the structural + qualitative judgement is taken from the **live
 `/hive-dev` render**, whose transform faithfulness is verified in §A. Anything the
 round cannot evidence is named as a blocker rather than scored around.
+
+### C. Matched before/after capture sets (real DOM, one driver)
+
+Rather than score the after round against the stale replica DOM, the capture path was rebuilt:
+`p15-real.cjs` imports `plugin.js` **verbatim** behind an import map that substitutes only
+`react` / `react-dom` / `@hermes/plugin-sdk` (`stub.js`), calls the plugin's own `register(ctx)`,
+lets its own boot path hydrate from the seed blob, and mounts the entry the plugin registered at
+`ROUTES_AREA` (`boot.js`). Nothing in the plugin is edited or rewritten; the captured DOM is the
+plugin's own markup (20 captures, `ready=true`, `errors=[]`, 189–307 scope nodes, up to 31 distinct
+`ts-*` classes per state — including `ts-chip ts-empty-* ts-toolbar-* ts-strip-* ts-addpop-* ts-mention-row ts-row-name ts-row-meta`, i.e. exactly the vocabulary §B found missing from the old harness).
+
+Both sets were then taken with that one driver, same seeds, same widths/themes/states, only the
+plugin under test differing — so the pair is matched, which the 14:53 `p15-*` vs `after-*` pair was not:
+
+```
+before  --plugin=<2f44398:plugin.js>  sha256 14e0d961…  20 captures  before-<w>-<state>-<theme>.png
+after   --plugin=worktree/plugin.js   sha256 d2a5f7c6…  20 captures  after-<w>-<state>-<theme>.png
+driver  worktree/p15-real.cjs (committed with this slice) + p15-real/stub.js + p15-real/boot.js
+        node p15-real.cjs --plugin=<abs path> --prefix=<before|after> --dsf=2
+```
+
+Measured deltas (`sentry-probe/p15-compare.py`, `sentry-probe/p15-outliers.py` over the two
+measurement JSONs):
+
+```
+clipped elements (scrollWidth > clientWidth), before -> after
+  1512-agent-detail-dark      13 -> 5      <- the pre-redesign overhang, fixed
+  1512/1456/1280-light/cjk    0 -> 2       <- ts-row-name.truncate ellipsis (intentional, see below)
+  1200-full-dark              0 -> 3        1 of which is ts-strip-meta.truncate ellipsis
+  1000-full-dark              0 -> 5      <- 2 ellipsis + ts-col-team/ts-dock at the collapsed width
+  700-full-dark               4 -> 4        different elements: before = ts-strip/ts-col-team labels,
+                                            after = ts-col-team/ts-dock + toolbar-title overflow
+empty/loading states (new in after): ts-empty-title 20px, ts-empty-body 13px
+
+type census, leaf text, in scope:  1512-full-dark
+  before  10px:43 11px:19 12px:16 14px:7 10.4px:2 12.6px:1
+  after   11px:45 12px:22 10px:10 14px:7 15px:1  12.6px:1     (empty: +20px:1 +13px:1)
+  10.4px (the ad-hoc 0.65rem) is gone; every plugin-owned size now sits on 10/11/12/13/15/20
+  14px x7  = div.block.min-w-0 (message body) — app markdown renderer, unchanged before->after
+  12.6px   = code.rounded.bg-muted (inline code) — app chrome, unchanged before->after
+radius  before {2px:30, 4px:16, 1.6px:7, 31996.8px:6, 6px:3}
+        after  {2px:29, 6px:18, 4px:4, 1.6px:7, 31996.8px:6, 999px:1}
+gap     before {4px:25, 6px:22, 8px:20, 2px:10} -> after {8px:25, 4px:24, 6px:20, 2px:12}
+tokens  identical before/after at :root
+```
+
+Two readings that must not be overclaimed:
+
+- The `rgb(1,2,3)` in the token probe is the probe's own sentinel, not a colour. `--ts-warn/-info/-ok/-bad/-idle`
+  are declared on `.ts-workspace` and overridden on `.dark .ts-workspace` (`plugin.js:2048-2053`), and the
+  probe appends its element to `document.body`, outside that scope — so the sentinel is expected there.
+  `--ts-elev` / `--ts-hairline` are referenced by no rule and no component (`grep` over
+  `plugin.js test.cjs smoke-render.mjs`: 0 hits) — dead names in the probe list, not missing tokens.
+- The `2px`/`4px` radii and the `14px`/`12.6px` text above are on **app-rendered** nodes inside the
+  scope (markdown body, inline code, reused primitives), i.e. the chrome the contract's §4 puts out of
+  scope. They are counted here so the census is honest, not asserted as plugin scale violations. The
+  contract's "census == {10,11,12,13,15,20}" is met for plugin-owned text; "radius census == {6px,50%}"
+  is met for plugin-owned boxes (6px:18 leading) and is not met literally once app primitives are counted.
+- The `ts-row-name.truncate` / `ts-strip-meta.truncate` hits are `text-overflow: ellipsis` on a
+  fixed-width row — the intended device, and recorded separately by the driver in `truncated[]`. The
+  contract's "zero elements with scrollWidth > clientWidth" is therefore *not* met as literally worded;
+  what matters for the verdict is whether any hit is *unintended* clipping, which §E checks against the
+  captures.
