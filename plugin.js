@@ -1316,7 +1316,7 @@ function hiveRenderText(text) {
         jsx('pre', {
           key: out.length,
           className: 'mt-1 mb-1 overflow-x-auto rounded-md bg-muted p-2 leading-snug',
-          style: { fontSize: '0.85em' },
+          style: HIVE_T.xs,
           children: blocks[i].replace(/\n$/, '')
         })
       )
@@ -2388,7 +2388,7 @@ function HiveMemberTone({ m }) {
           jsxs('div', { className: 'flex items-center gap-2 uppercase tracking-wide', style: HIVE_T.xs, children: [
             jsx('span', { style: { color: accent.color }, className: 'font-semibold', children: label }),
             isRelay && jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: '⤷ relay' }),
-            jsx('time', { className: 'text-muted-foreground', style: { fontSize: 11, lineHeight: '14px' }, children: hiveTime(ts) })
+            jsx('time', { className: 'text-muted-foreground', style: HIVE_T.xs, children: hiveTime(ts) })
           ] }),
           jsx('div', { className: 'min-w-0 break-words text-sm leading-relaxed text-foreground', style: HIVE_T.wrap, children: hiveRenderText(text) })
         ] })
@@ -2436,7 +2436,7 @@ function HiveTurnRow({ turn }) {
         turn.phase === 'streaming' && jsx('span', { className: 'animate-pulse text-muted-foreground', children: 'answering…' }),
         turn.phase === 'error' && jsx('span', { style: { color: 'var(--ui-red)' }, className: 'font-semibold', children: '✕ error' }),
         turn.phase === 'done' && jsx('span', { className: 'text-muted-foreground', children: '✓ done' }),
-        jsx('time', { className: 'text-muted-foreground', style: { fontSize: 11, lineHeight: '14px' }, children: hiveTime(turn.ts) }),
+        jsx('time', { className: 'text-muted-foreground', style: HIVE_T.xs, children: hiveTime(turn.ts) }),
         busy && jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: hiveFmtDur(dur) })
       ] }),
       // running tools
@@ -3675,7 +3675,7 @@ function TsWorkCard({ entry }) {
         entry.workId ? jsx('span', { className: 'font-mono text-muted-foreground', children: '#' + entry.workId }) : null,
         jsx('span', { className: 'font-semibold uppercase tracking-wide', style: { color: tone }, children: label }),
         jsx('span', { className: 'truncate text-muted-foreground', children: who }),
-        jsx('time', { className: 'ml-auto text-muted-foreground', style: { fontSize: 11, lineHeight: '14px' }, children: hiveTime(entry.ts) })
+        jsx('time', { className: 'ml-auto text-muted-foreground', style: HIVE_T.xs, children: hiveTime(entry.ts) })
       ] }),
       jsx('div', { className: 'min-w-0 break-words', style: { ...HIVE_T.md, ...HIVE_T.wrap }, children: hiveRenderText(entry.text || '') }),
       kind === 'done' && entry.artifact
