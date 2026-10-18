@@ -1227,3 +1227,40 @@ SDK's `Popover` with collision handling, or clamp its width to the column.
 dependency-free, both read-only apart from the deliberate turn. They live in
 `sentry-probe/`, which is outside this repo (as in every earlier pass), so they
 are runnable but untracked.
+
+## P1.5 implementation — suite re-run (FORGE, card `t_5ed602ed`)
+
+Revision: branch `team-studio` @ `196330e` (implementation `2888409`…`92b0bf0`, one CSS token
+fix `196330e`). Run from `~/Developer/hive-team-studio/worktree`, re-run *after* the fix.
+
+```
+$ node test.cjs
+ALL PASS 312/312                    # was 292/292 at 2f44398 → +20 rows
+
+$ node smoke-render.mjs
+ALL PASS 85/85
+
+$ node css-layout-probe.cjs --widths=1200,1000,700,600,500
+ALL PASS — every reachability expectation holds across 1200/1000/700/600/500 px
+```
+
+Exit code 0 on all three. `node --check plugin.js` clean.
+
+New pure-logic rows, all in `test.cjs`: `hiveOrderMembers` ×7 (pinned leader first; `browser`
+carries no rank; explicit `order` beats insertion order; equal ranks fall back to profile name;
+team-agnostic) — the P-04.3 comparator; `hiveRoomStatus` ×4 and `hiveWorkSummary` ×3 (dock and
+Work-header readouts are data, singular counts stay singular, the last-activity tail appears
+only when there is a clock, and the dock never says "member(s)"); `hiveOpenItemCount` ×3
+(`passed` settles, malformed tasks cannot inflate, `undefined` → 0 not NaN); `hiveLastActivityTs`
+×2; `hiveRosterSummary` ×3 (honest count, quiet room, empty room); one `hiveTaskStatusTone`
+token-purity assert (every tone is `var(--ts-*)`, never a hex literal). `smoke-render.mjs` gained
+its rgb-literal and media-query-width checks.
+
+Dev copy: `~/Developer/hive-team-studio/sync-dev.sh` re-run against `196330e` — log reads
+`synced: /Users/adnan/.hermes/desktop-plugins/buzz-hive-dev/plugin.js` and
+`residual non-dev 'buzz-hive' occurrences: none`. Reversing the identity transform gives a
+**0-line diff** against the worktree `plugin.js`, so a live `/hive-dev` capture is evidence for
+`196330e`.
+
+**Not verified here:** nothing visual. No captures were re-taken and no numeric acceptance was
+measured — that is the QA round (card `t_40252ce7`). PASS is not claimed by FORGE.

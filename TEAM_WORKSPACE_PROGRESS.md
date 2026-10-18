@@ -786,3 +786,37 @@ DOM-verified from `p15-measurements.json` `clipped[]` at 700 px (`.ts-col-team` 
 4. **Still unobserved (unchanged):** no populated approvals row, no Stop click, no
 motion/hover/focus/keyboard evidence, no CJK capture, no live light render. PASS is not
 available on this round.
+
+### Run 25 — P1.5 implementation landed (FORGE, card `t_5ed602ed`)
+
+Branch `team-studio`, `2f44398..196330e` — 7 commits: `2888409`, `8009ec4`, `c87a813`,
+`cd16181`, `36f892a`, `92b0bf0`, `196330e`. `plugin.js` ≈ +900/−260; `test.cjs`,
+`smoke-render.mjs` and `css-layout-probe.cjs` extended alongside it.
+
+1. **`2888409` / `8009ec4` — adopt, don't redo.** Run 22's uncommitted patch series
+   (P-01…P-22 partial) and run 23's pure status/summary helpers were committed as-is
+   before any new work, so the inherited series is preserved in history.
+2. **`c87a813`** wires the design system into the JSX (P-08/P-09/P-12/P-13/P-17/P-18/P-22/P-24);
+   **`cd16181`/`36f892a`** adopt the type scale at the source and move the roster meta line,
+   timestamps and code blocks onto the xs step (P-03/P-06); **`92b0bf0`** fixes the mention
+   picker close, roster row anatomy and grammar chips starting a flow (P-21).
+3. **`196330e` — the last numeric-acceptance straggler.** §3 requires every padding value to
+   divide by 4; `.ts-chip` was the only `0 5px` left in the CSS block, now `var(--ts-s1)`.
+
+Verified in the source (not a checklist): `--ui-danger`/`--ui-warning` and their fallback
+hexes are gone entirely (0 occurrences) — P-16 maps to `--ui-green`/`--ui-red` with a local
+`.dark` override pair for warn/info. Type census is exactly {10,11,12,13,15,20} px; spacing is
+the {4,8,12,16,24} scale with no off-scale padding left; radii are {6px, pill};
+`--ts-dur:160ms` sits in the contract's 150–250 ms band behind a `prefers-reduced-motion`
+guard; media queries at 1240/1100/880/600; CJK body steps up to 14 px.
+
+**Deliberately deferred, with reasons:**
+
+- The §3 before/after capture set and every numeric-acceptance *measurement* — that is the
+  visual-QA round (card `t_40252ce7`), which owns the window and the verdict. Nothing visual
+  is claimed from this run.
+- Leader semantics stay presentational (contract §4); the copy says so.
+- No storage change was needed: the `hive.v2` blob keeps its shape, P2's `hive.v3:*` scheme is
+  untouched and no new persisted key was added.
+- The app's own token defect (`--ui-yellow` etc. defined only at `:root`) is worked around with
+  the local `.dark` override pair rather than patched — contract §4 excludes it.
