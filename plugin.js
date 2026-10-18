@@ -2081,7 +2081,7 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-row[data-selected="true"]{background:var(--ui-bg-tertiary);box-shadow:inset 2px 0 0 var(--ts-accent)}
 .ts-row-name{font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);font-weight:600}
 .ts-row-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ts-idle)}
-.ts-chip{display:inline-flex;align-items:center;height:14px;padding:0 5px;border-radius:var(--ts-r-pill);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ts-warn);background:color-mix(in srgb, var(--ts-warn) 10%, transparent);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
+.ts-chip{display:inline-flex;align-items:center;height:14px;padding:0 var(--ts-s1);border-radius:var(--ts-r-pill);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ts-warn);background:color-mix(in srgb, var(--ts-warn) 10%, transparent);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
 .ts-chip:hover{background:color-mix(in srgb, var(--ts-warn) 22%, transparent)}
 .ts-avatar{display:inline-flex;width:24px;height:24px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--ts-r);font-size:var(--ts-f-sm);font-weight:600;line-height:1}
 .ts-card{border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-card);padding:var(--ts-s2) var(--ts-s3)}
