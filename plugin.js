@@ -2330,7 +2330,7 @@ function HiveModelSubmenu({ m }) {
               catalogState === 'loading' && entries.length === 0 && jsx('div', { className: 'px-2 py-1.5 text-muted-foreground', style: HIVE_T.xs, children: 'Loading available models…' }),
               catalogState === 'error' && entries.length === 0 && jsx('div', { className: 'px-2 py-1.5 text-muted-foreground', style: HIVE_T.xs, children: 'Could not load model list — showing curated models.' }),
               groups.map((g) => jsxs('div', { key: g.provider, children: [
-                jsx('div', { className: 'px-2 pt-2 pb-1 text-[0.65rem] font-medium uppercase tracking-wide text-muted-foreground', children: g.label }),
+                jsx('div', { className: 'px-2 pt-2 pb-1 font-medium uppercase tracking-wide text-muted-foreground', style: HIVE_T.micro, children: g.label }),
                 g.entries.map((e) => jsx(SelectItem, { key: 'm-' + hiveModelKey(e), value: 'm-' + hiveModelKey(e), className: 'font-mono text-xs', children: hiveEntryDisplayLabel(e) }))
               ] }))
             ]
@@ -2516,7 +2516,7 @@ function HiveAgentGroup({ profile, messages, expanded, onToggle, unseen }) {
           jsx('span', { style: { color }, className: 'shrink-0 font-semibold', children: isSystem ? 'hive' : '@' + profile }),
           busy && jsx('span', { className: 'shrink-0 animate-pulse text-muted-foreground', style: HIVE_T.xs, children: '…' }),
           jsx('span', { className: 'truncate text-muted-foreground', style: HIVE_T.xs, children: expanded ? `${count} msg` : (preview || (busy ? 'working…' : `${count} msg`)) }),
-          unseen > 0 && !expanded && jsx('span', { className: 'shrink-0 rounded-full px-1.5 text-[10px] font-medium', style: { background: color, color: '#fff' }, children: `● ${unseen} new` })
+          unseen > 0 && !expanded && jsx('span', { className: 'shrink-0 rounded-full px-1.5 font-medium', style: { ...HIVE_T.micro, background: color, color: 'var(--ui-bg-elevated)' }, children: `● ${unseen} new` })
         ] })
       }),
       expanded && jsx('div', { className: 'flex flex-col gap-0.5 px-1 pb-1', children:
@@ -2742,7 +2742,7 @@ function HiveComposer() {
         jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Route:' }),
         ...HIVE_GRAMMAR_HINTS.map((h) => jsx(Button, {
           key: h.id, variant: 'ghost', size: 'sm',
-          className: 'h-5 px-1.5 text-[10px]',
+          className: 'h-5 px-1.5', style: HIVE_T.xs,
           title: `Insert ${h.label} — agents read this as a directed message`,
           onClick: () => insertTemplate(h.tpl),
           children: h.label
@@ -3566,13 +3566,18 @@ function TsAgentDetail({ m, status, turn }) {
 
 function TsAgentRow({ m, status, turn, open }) {
   const selected = useValue($tsAgentSelected)
+  const timeline = useValue($hiveTimeline)
   const isSelected = hiveNormalize(selected || '') === hiveNormalize(m.profile)
   // Name line: dot · @profile · pin chip · browser glyph · busy glyph.
   // Meta line: model · last activity · duration — no role mojibake, and the
   // leader flag is visible as a chip instead of a word buried in the meta line.
+  // P-03: model · last activity · duration — the row's own history, not just
+  // the turn that happens to be live.
+  const last = hiveLastProfileEntry(timeline, m.profile)
   const meta = [
     m.muted ? 'muted' : null,
     m.model ? (m.modelLabel || m.model) : 'no model',
+    last && last.ts ? hiveTime(last.ts) : null,
     turn ? hiveFmtDur((turn.doneAt || Date.now()) - turn.startedAt) : null
   ].filter(Boolean).join(' · ')
   const toggle = () => {
@@ -3672,7 +3677,7 @@ function TsWorkCard({ entry }) {
         jsx('span', { className: 'truncate text-muted-foreground', children: who }),
         jsx('time', { className: 'ml-auto text-muted-foreground', style: { fontSize: 11, lineHeight: '14px' }, children: hiveTime(entry.ts) })
       ] }),
-      jsx('div', { className: 'min-w-0 break-words text-xs leading-relaxed', style: HIVE_T.wrap, children: hiveRenderText(entry.text || '') }),
+      jsx('div', { className: 'min-w-0 break-words', style: { ...HIVE_T.md, ...HIVE_T.wrap }, children: hiveRenderText(entry.text || '') }),
       kind === 'done' && entry.artifact
         ? jsx('div', { className: 'rounded border p-1.5 text-muted-foreground', style: HIVE_T.xsWrapWide, children: entry.artifact })
         : null,
@@ -4068,7 +4073,7 @@ function TsRightPanel() {
           children: jsx(TabsList, {
             className: 'ts-tabstrip mx-2 mt-1 w-auto max-w-[calc(100%-1rem)] justify-start gap-0.5 p-0.5',
             children: TS_RIGHT_TABS.map((t) => jsx(TabsTrigger, {
-              key: t.id, value: t.id, className: 'h-6 gap-1 px-1.5 text-[0.6875rem]',
+              key: t.id, value: t.id, className: 'h-6 gap-1 px-1.5', style: HIVE_T.sm,
               children: t.label
             }))
           })
