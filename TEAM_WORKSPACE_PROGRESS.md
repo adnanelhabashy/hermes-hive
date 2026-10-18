@@ -864,3 +864,22 @@ width  .ts-col-team sw/cw   .ts-dock sw/cw
 ```
 Remaining `scrollWidth > clientWidth` hits at 1000/1200 are `text-overflow: ellipsis` on fixed-width
 rows (`.ts-row-name`, `.ts-strip-meta`) — the intended device, F-3 addresses the row-name one.
+
+### 3/8 F-3 — work-item titles get a second line
+
+`TsTaskRow`'s title is `.ts-row-name truncate`; at the 280px panel that means one line and a
+truncation point in the middle of the sentence. Fix: a `min-width:1200px` block gives
+`.ts-col-right .ts-row-name` (and the right sheet copy) `display:-webkit-box` +
+`-webkit-line-clamp:2` + `white-space:normal`, which outranks the `.truncate` utility on
+specificity. Roster/addpop row names and the agent-detail rows are untouched — they are not in
+`.ts-col-right`. Below 1200 the panel is 196–240px wide and keeps one-line ellipsis (measured,
+still reported as `truncated[]`, i.e. intended).
+
+Measured (`probe --only=-full`):
+```
+                before              after
+1512 right title  327/236 one line   236/236 clamp 2, h=36 (2x18)
+1456              327/236            236/236 clamp 2
+1200              327/196            196/196 clamp 2
+1000 (below 1200) 327/196            unchanged, ellipsis
+```

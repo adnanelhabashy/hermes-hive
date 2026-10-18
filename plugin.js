@@ -2080,6 +2080,13 @@ const HIVE_TS_CSS = `.ts-workspace{
 }
 .ts-row[data-selected="true"]{background:var(--ui-bg-tertiary);box-shadow:inset 2px 0 0 var(--ts-accent)}
 .ts-row-name{font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);font-weight:600}
+/* P1.5 F-3: in the 280px Work panel the title is the one line that says what
+   the work is; one line cut it to "Rewrite the citation block to the Febr…".
+   Two lines from 1200 up, where the panel is 280px and has the height for it.
+   The rail (<=880) shows no titles at all, so it never needs the clamp. */
+@media (min-width:1200px){
+.ts-col-right .ts-row-name,.ts-sheet[data-side="right"] .ts-row-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal}
+}
 .ts-row-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ts-idle)}
 .ts-chip{display:inline-flex;align-items:center;height:14px;padding:0 var(--ts-s1);border-radius:var(--ts-r-pill);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ts-warn);background:color-mix(in srgb, var(--ts-warn) 10%, transparent);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
 .ts-chip:hover{background:color-mix(in srgb, var(--ts-warn) 22%, transparent)}
