@@ -1230,11 +1230,27 @@ function hiveRosterSummary(count, working) {
   return busy > 0 ? label + ' · ' + busy + ' working' : label
 }
 
-/** Bottom-dock status line (P-13): room data, never a sentence about panes. */
-function hiveRoomStatus(count, openItems) {
+/** Bottom-dock status line (P-13): room data, never a sentence about panes.
+ *  `lastLabel` is the caller's already-formatted clock (hiveTime lives outside
+ *  the pure slice), so this stays a pure, testable string builder. */
+function hiveRoomStatus(count, openItems, lastLabel) {
   const n = Number(count) || 0
   const o = Number(openItems) || 0
-  return 'Room · ' + (n === 1 ? '1 agent' : n + ' agents') + ' · ' + (o === 1 ? '1 open item' : o + ' open items')
+  const base = 'Room · ' + (n === 1 ? '1 agent' : n + ' agents') + ' · ' + (o === 1 ? '1 open item' : o + ' open items')
+  return lastLabel ? base + ' · last activity ' + lastLabel : base
+}
+
+/** The right panel's header line (P-18): open items + last activity. Pure. */
+function hiveWorkSummary(openItems, lastLabel) {
+  const o = Number(openItems) || 0
+  const head = o === 1 ? '1 open item' : o + ' open items'
+  return lastLabel ? head + ' · last activity ' + lastLabel : head
+}
+
+/** The room's open work-item count — `passed` is settled, everything else is
+ *  open. A malformed task cannot inflate it. Pure. */
+function hiveOpenItemCount(tasks) {
+  return (tasks || []).filter((t) => t && t.status !== 'passed').length
 }
 
 /** The room's most recent activity timestamp, or null (P-18 strip). Pure. */

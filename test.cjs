@@ -20,7 +20,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 // inside the CORE markers, so nothing here re-declares (and silently drifts
 // from) a real plugin value.
 const factory = new Function(
-  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas, hiveCardTitle, hiveOrderMembers, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
+  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas,  hiveCardTitle, hiveOrderMembers, hiveRosterSummary, hiveRoomStatus, hiveWorkSummary, hiveOpenItemCount, hiveLastActivityTs, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
 )
 const {
   hiveParseCoordination,
@@ -86,6 +86,11 @@ const {
   hiveBatchDeltas,
   hiveCardTitle,
   hiveOrderMembers,
+  hiveRosterSummary,
+  hiveRoomStatus,
+  hiveWorkSummary,
+  hiveOpenItemCount,
+  hiveLastActivityTs,
   HIVE_TIMELINE_MEM,
   HIVE_TIMELINE_KEEP,
   HIVE_PAYLOAD_MAX,
