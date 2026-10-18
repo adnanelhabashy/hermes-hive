@@ -705,8 +705,8 @@ passing every checklist row. Board card `t_e3b52d33`. **No product code changed.
    put the real plugin surface at ~1156px → the live app runs the ≤1100px regime,
    where the entire Work half collapses to a 48px rail labelled `Ta Ac Fi Ap Wo`.
 4. **Four measured causes** behind "doesn't feel practical": (C1) fixed
-   four-column shell — team column 88% flat background (597px), right panel 77%
-   (548px), feed 78%; (C2) five type sizes all ≤14px with 10px dominant (40 leaf
+   four-column shell — team column 98% flat background (591px run), right panel 77%
+   (544px run), feed 68%; (reconciled in run 20 — see the run-20 note below) (C2) five type sizes all ≤14px with 10px dominant (40 leaf
    nodes) because `HIVE_T.xs=10px`; (C3) a 240px roster whose expanded detail
    truncates the work-item title to 114px; (C4) narrow regimes clip instead of
    adapt (at 700px `.ts-strip` 71>55 and `.ts-dock` 110>55 → "TEAM 4", "+ Add").
@@ -751,7 +751,7 @@ smoke-render.mjs                    UNCHANGED
 ```
 
 Captures live outside the repo at `~/Developer/hive-team-studio/sentry-probe/p15-captures/`
-(16 harness PNGs + `p15-measurements.json` + `p15-pixel-evidence.json`), alongside the
+(17 harness PNGs + `p15-measurements.json` + `p15-pixel-evidence.json` + `p15-flatshare.json`), alongside the
 three live-app captures from the previous run.
 
 **Not claimed:** no motion/hover/focus/keyboard evidence, no CJK capture, no live
@@ -763,3 +763,26 @@ still unobserved. A PASS is not available on this round.
 Implement the 24 patches, then retake the 14 captures named in the contract's §3 at
 the same widths/states/themes and re-run the numeric acceptance block; the QA round
 rescores against the new captures.
+
+### Run 20 — reconciliation + Approvals state (design-only, no code change)
+
+1. **Approvals tab captured and reviewed.** The card's tab list is complete
+(Tasks/Activity/Files/Approvals/Workflow). `p15-1512-tab-approvals-dark.png` (98 %
+flat, 625 px run) shows the mirror/disclaimer copy — "A convenience mirror — the
+app's own modal still owns live approval prompts" over "No pending approvals." — so the
+panel spends its whole height saying the durable surface is elsewhere; folded into
+F-16 and §3.9 rather than left as an unobserved gap.
+2. **All flat-share numbers re-measured** with one reproducible metric
+(`p15-flatshare.py` → `p15-flatshare.json`; deterministic re-run over the committed
+PNGs). Corrected in the critique's §1 C1, §3.1, §3.3, §3.5, §3.9, F-01, F-05, F-07 and
+the §8 differences list; the critique gained §10 "Evidence reconciliation". Every
+correction moves the same way (columns emptier), so the verdict stays **REVISE 41/100**
+and no axis deduction changed.
+3. **Lineage re-verified.** `buzz-hive-dev/plugin.js` vs `worktree/plugin.js` (a6872c2) =
+26 diff lines, all seven hunks dev-identity strings (route, storage keys, labels) — no
+behavioural delta, so the captures are evidence for a6872c2. F-02's clipping claim is
+DOM-verified from `p15-measurements.json` `clipped[]` at 700 px (`.ts-col-team` 110>55,
+`.ts-strip` 71>55, `.ts-dock` 110>55).
+4. **Still unobserved (unchanged):** no populated approvals row, no Stop click, no
+motion/hover/focus/keyboard evidence, no CJK capture, no live light render. PASS is not
+available on this round.

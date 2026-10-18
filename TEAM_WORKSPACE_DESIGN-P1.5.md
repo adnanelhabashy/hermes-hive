@@ -280,7 +280,7 @@ route exists, a `Kanban board` link. No "ask an agent" instruction in a UI panel
 Re-run exactly this (same command, same widths, same states; the harness takes `--state`):
 
 ```sh
-cd ~/Developer/hive-team-studio/sentry-probe && node p15-render.cjs --dsf=2 && python3 p15-pixels.py
+cd ~/Developer/hive-team-studio/sentry-probe && node p15-render.cjs --dsf=2 && python3 p15-pixels.py && python3 p15-flatshare.py
 ```
 
 | # | capture | must show |
@@ -296,7 +296,7 @@ cd ~/Developer/hive-team-studio/sentry-probe && node p15-render.cjs --dsf=2 && p
 | 9 | `p15-1512-agent-detail-dark` | work-item title untruncated, ≤3 visible actions, leader chip |
 | 10 | `p15-1512-addpop-dark` | 232px box inside the column, pin toggle per row |
 | 11 | `p15-1512-mention-dark` | ≤280px picker, edge-marked active row, opens on a bare `@` |
-| 12 | `p15-1512-tab-{activity,files,workflow}-dark` | each empty/degraded state designed; flat-share < 90 % |
+| 12 | `p15-1512-tab-{activity,files,approvals,workflow}-dark` | each empty/degraded state designed; flat-share < 90 % (measured by `p15-flatshare.py`) |
 | 13 | `p15-1000-sheet-{team,right}-dark` | sheets mirror the columns |
 | 14 | NEW `p15-1512-cjk-dark` | one Korean (or Japanese) render via the app's language setting, body ≥14px, no broken line-height |
 

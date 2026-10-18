@@ -19,11 +19,13 @@ The Phase 1 checklist passed and the UI is still wrong in daily use because the 
 **C1 — The shell is a fixed four-column grid; the only growing content gets the middle third, and two
 thirds of the width is permanently empty furniture.**
 `.ts-workspace` is `grid-template-columns: 240px minmax(420px,1fr) 320px` (`plugin.js:1947`). Measured on
-the captures: the team column is **88 % flat background** (one unbroken run from y=229 to y=826, 597 px of
-a 730 px column) and the right panel is **77 % flat** (y=282→830, 548 px). The conversation — the only
+the captures: the team column is **98 % flat background** (one unbroken run from y=229 to y=819, 591 px of
+a 730 px column) and the right panel is **77 % flat** (y=282→825, 544 px). The conversation — the only
 thing that grows — gets 896 px at 1512, 584 px at 1200. A user opening the room to talk to agents sees two
 empty columns flanking a chat pane that scrolls early. Evidence: `p15-1512-full-dark.png` (team x0–240,
-right x1136–1456), `p15-1456-full-dark.png`, `p15-1280-full-light.png`.
+right x1136–1456), `p15-1456-full-dark.png`, `p15-1280-full-light.png`. Flat shares are quoted from
+`p15-flatshare.json` (`p15-flatshare.py`; definition in its header: pixel share equal to the region's modal
+paper colour), so the before/after rounds measure the same thing.
 
 **C2 — Everything is 10–11 px, so nothing leads, including the work itself.**
 Measured leaf-node type census over `.ts-workspace` at 1512 dark: **10 px ×40, 11 px ×23, 12 px ×11,
@@ -50,7 +52,7 @@ capture shows exactly that: the header reads **"TEAM 4"** (of "TEAM 4/11") and t
 
 ## 2. Capture set, lineage and fidelity contract
 
-Sixteen captures in `sentry-probe/p15-captures/`, rendered from this revision:
+Seventeen harness captures in `sentry-probe/p15-captures/`, rendered from this revision:
 
 | capture | width / app-w | theme | state |
 |---|---|---|---|
@@ -65,7 +67,7 @@ Sixteen captures in `sentry-probe/p15-captures/`, rendered from this revision:
 | `p15-1512-agent-detail-dark.png` | 1512 / 1456 | dark | `@arch` row expanded |
 | `p15-1512-addpop-dark.png` | 1512 / 1456 | dark | add-agent popover open |
 | `p15-1512-mention-dark.png` | 1512 / 1456 | dark | @-mention autocomplete open |
-| `p15-1512-tab-{activity,files,workflow}-dark.png` | 1512 / 1456 | dark | remaining right-panel tabs |
+| `p15-1512-tab-{activity,files,approvals,workflow}-dark.png` | 1512 / 1456 | dark | remaining right-panel tabs (Tasks is the `-full-` default) |
 | `p15-1000-sheet-{team,right}-dark.png` | 1000 / 944 | dark | overlay sheets |
 
 Three further captures are the **live app itself**, not a harness: `p15-1512-timeline-dark.png`,
@@ -76,8 +78,9 @@ desktop app in the previous run, session `20261018_135121_80425c`).
 
 ```sh
 cd ~/Developer/hive-team-studio/sentry-probe
-node p15-render.cjs --dsf=2          # 16 captures + p15-measurements.json
+node p15-render.cjs --dsf=2          # 17 captures + p15-measurements.json
 python3 p15-pixels.py                # rendered-pixel evidence -> p15-pixel-evidence.json
+python3 p15-flatshare.py             # flat-share / dead-space numbers -> p15-flatshare.json
 ```
 
 ### 2.1 Fidelity contract — what these captures are evidence *for*
@@ -121,11 +124,12 @@ so I am *not* claiming a clipped tab; I am claiming the live width regime matter
 
 Regions are CSS px inside the plugin surface (`x` from the surface's left edge, `y` from its top).
 
-**3.1 `p15-1512-full-dark.png` — 88 % / 78 % / 77 % empty columns.** First, second and third fixations
+**3.1 `p15-1512-full-dark.png` — 98 % / 68 % / 77 % empty columns (flat share).** First, second and third fixations
 compete: the 11 px white user bubble (x248–896, y66–112), the bordered task chip (x248–470, y196–214), and
 the avatar squares (x8–30, y62–230). Nothing has a claim to lead: the room title in the toolbar is 12 px
-and the tabstrip is 11 px. Dead space: team y229→826 (597 px, 88 %), right y282→830 (548 px, 77 %), feed
-y443→734 (291 px, 78 % — the transcript ends mid-column because the composer is pinned at the bottom).
+and the tabstrip is 11 px. Dead space (`p15-flatshare.json`): team y229→819 (591 px, 98 %), right y282→825
+(544 px, 77 %), feed y452→724 (273 px, 68 % — the transcript ends mid-column because the composer is
+pinned at the bottom).
 Rail/column radii disagree (see 3.9).
 
 **3.2 `p15-1456-full-dark.png` / `p15-1200-full-dark.png` — the squeeze is in the middle.** At 1200 the
@@ -136,7 +140,7 @@ competing with the primary input.
 
 **3.3 `p15-1000-full-dark.png` — the whole work half of the product becomes five two-letter buttons.**
 At ≤1100 px the right column collapses to a 48 px rail (measured rail 47×164, five 28×28 buttons, labels
-`Ta Ac Fi Ap Wo`) and the right body is `display:none`. The rail is **96 % flat** — five tiny controls in
+`Ta Ac Fi Ap Wo`) and the right body is `display:none`. The rail is **99 % flat** (0.995; one unbroken run y198→825, 628 px) — five tiny controls in
 a 730 px column. This is the regime the live app actually runs in (§2.2). A new user looking for
 "Approvals" or "Workflow" sees `Ap`/`Wo` and nothing else; the toolbar adds icon-only "T"/"W" buttons that
 open the same two sheets — two affordances for one action, neither labelled in the visible column.
@@ -145,8 +149,8 @@ open the same two sheets — two affordances for one action, neither labelled in
 `+ Add` (member count clipped). The avatars themselves are fine (22 px at x17–39). Icons in the toolbar
 compress but do not clip. Below 600 px the team and right columns are removed and both become sheets.
 
-**3.5 `p15-1512-empty-dark.png` — the empty room is a dead room.** Team column 100 % flat (y100→826);
-feed **94 % flat** (y113→734, 621 px) carrying one 11 px sentence: *"No activity yet. Message @default or
+**3.5 `p15-1512-empty-dark.png` — the empty room is a dead room.** Team column 99.8 % flat (y100→819,
+720 px); feed **99 % flat** (y114→724, 611 px) carrying one 11 px sentence: *"No activity yet. Message @default or
 add agents to start the crew."* The right panel is unchanged from the populated state (77 % flat, Tasks
 tab showing a "Board" explainer about native Kanban). A brand-new user sees three empty panels and one
 line of grey text; nothing shows what the room is for, who leads, or what to type. The sentence also names
@@ -178,11 +182,14 @@ tab background (tabstrip). Also confirmed: a lone `@` does not open the picker �
 only when the filter string is non-empty (`plugin.js:2465–2468`), so `@` alone shows nothing and the user
 must type at least one character (the A6 nit from the Phase 1 pass, still open).
 
-**3.9 `p15-1512-tab-{tasks,activity,files,workflow}-dark.png` — four tabs, three dead, one useful.**
-Flat-background share per tab body measured over y100–830: Tasks 77 %, Activity 90 %, Files **95 %**
-(y169→830), Workflow **96 %** (y201→830). Files and Workflow each carry 2–3 lines of grey text at 10 px
-plus one dashed box; the workflow body is 548 px of empty panel under a single sentence. None of them
-offers a next action beyond a link-card. Empty and degraded states *exist* (Files/Approvals/Workflow have
+**3.9 `p15-1512-tab-{tasks,activity,files,approvals,workflow}-dark.png` — five tabs, four near-empty, none
+with a next action.** Flat share of the right column body (x1136–1456, y96–826, `p15-flatshare.json`):
+Tasks **77 %**, Activity **91 %** (y204→825), Files **96 %** (y169→825), Approvals **98 %** (y201→825),
+Workflow **98 %** (y201→825). Files, Approvals and Workflow each carry 2–3 lines of grey text at 10 px and
+at most one dashed box; Approvals and Workflow answer with a *disclaimer* rather than a state —
+"A convenience mirror — the app's own modal still owns live approval prompts. Choices come from the server
+verbatim." over "No pending approvals." — 625 px of empty panel spent telling the user that the durable
+surface is somewhere else. None of them offers a next action beyond a link-card. Empty and degraded states *exist* (Files/Approvals/Workflow have
 degraded branches, `plugin.js:3513–3640`) — they are honestly written, and they are visually
 indistinguishable from each other.
 
@@ -222,13 +229,13 @@ trust daily. Medium = quality debt the premium bar will not pass. Nit = cosmetic
 
 | # | Rank | Finding | Evidence | Smallest fix |
 |---|---|---|---|---|
-| F-01 | **Blocker** | At ≤1100 px the entire Work half of the product (Tasks/Activity/Files/Approvals/Workflow) is behind a 48 px rail whose labels are `Ta Ac Fi Ap Wo`, duplicated by unlabelled toolbar buttons. This is the regime the live app runs in. | `p15-1000-full-dark.png` (rail 47×164, 96 % flat); `p15-1456-full-dark.png` §2.2 | Keep a labelled, icon+text tabstrip down to 1000 px (shrink the two side columns first); make the rail icon-only with tooltips and a visible "Work" label. |
+| F-01 | **Blocker** | At ≤1100 px the entire Work half of the product (Tasks/Activity/Files/Approvals/Workflow) is behind a 48 px rail whose labels are `Ta Ac Fi Ap Wo`, duplicated by unlabelled toolbar buttons. This is the regime the live app runs in. | `p15-1000-full-dark.png` (rail 47×164, 99 % flat); `p15-1456-full-dark.png` §2.2 | Keep a labelled, icon+text tabstrip down to 1000 px (shrink the two side columns first); make the rail icon-only with tooltips and a visible "Work" label. |
 | F-02 | **Blocker** | At 700 px the team header and dock are clipped mid-word (`TEAM 4`, `+ Add`) instead of adapting: `.ts-strip` 71>55, `.ts-dock` 110>55. | `p15-700-full-dark.png`; `p15-measurements.json` | At ≤860 px hide the strip label text and dock text, show a count badge on the avatar column, or replace the header with an icon + count. |
 | F-03 | **High** | No hierarchy: five sizes all ≤14 px, 10 px dominant (40 leaf nodes); the reading size for titles and metadata is the same. | Type census §1 C2; `p15-1512-full-dark.png` | Adopt the 11/12/13/15/20 scale (§5 contract P-06) and reserve 10 px for non-reading chrome only. |
 | F-04 | **High** | Status colour is not theme-aware: `--ui-yellow #c08532`, `--ui-purple #9e94d5`, `--ui-orange #db704b`, `--ui-warm #cf806d` are defined only at `:root` while `--ui-red`/`--ui-green` are defined twice. `IN REVIEW` is identical in both themes. | app CSS `:root` vs `:root.dark`; `p15-1512-full-dark.png`, `p15-1280-full-light.png` | Ship a plugin-owned semantic ramp (see contract P-16) instead of borrowing the four theme-invariant tokens. |
-| F-05 | **High** | Two thirds of the width is permanently empty furniture: team 88 % flat (597 px), right 77 % (548 px), while the feed gets 584 px at 1200. | §1 C1; `p15-1512-full-dark.png` | Narrow the fixed columns to 208/264, let the right column collapse to a labelled strip below 1200, and give both columns real content (§5 P-01/P-18). |
+| F-05 | **High** | Two thirds of the width is permanently empty furniture: team 98 % flat (591 px run), right 77 % (544 px run), while the feed gets 584 px at 1200. | §1 C1; `p15-1512-full-dark.png` | Narrow the fixed columns to 208/264, let the right column collapse to a labelled strip below 1200, and give both columns real content (§5 P-01/P-18). |
 | F-06 | **High** | The expanded agent card truncates the work-item title to 114 px and buries the answer to "what is this agent doing?" under 5 metadata lines and 7 equal buttons. | `p15-1512-agent-detail-dark.png`; `plugin.js:3217–3261` | Work-item title full width; actions grouped primary / secondary / overflow; metadata collapsed to one line + disclosure (contract P-11/P-12). |
-| F-07 | **High** | The empty room is a dead room: team 100 % flat, feed 94 % flat (621 px) with one 11 px sentence, right panel unchanged from the populated state. | `p15-1512-empty-dark.png` | A designed empty state that answers "what is this room, who leads, what do I type" and shows the two real next actions (contract P-17/P-13). |
+| F-07 | **High** | The empty room is a dead room: team 99.8 % flat (720 px run), feed 99 % flat (611 px run) with one 11 px sentence, right panel unchanged from the populated state. | `p15-1512-empty-dark.png` | A designed empty state that answers "what is this room, who leads, what do I type" and shows the two real next actions (contract P-17/P-13). |
 | F-08 | **High** | The `leader` feature is effectively invisible and its label over-promises: reachable only as the 6th of 7 buttons in the expanded card; its whole effect is sort-to-top (`hiveOrderMembers`, `plugin.js:1184–1191`) plus a `leader` word in the 10 px meta line. The button's own `title` admits it ("Sort this member to the top of the panel") while the label says "Mark leader". | `plugin.js:2892–2899`, `3253`, `3267`, `1184–1191`; `p15-1512-agent-detail-dark.png` | First-class role marker on the row, settable at add-time, honest label ("Pin to top" until Phase 3 gives the flag semantics) (contract P-13). |
 | F-09 | **Medium** | Granting browser access silently reorders the roster: `hiveOrderMembers` puts `browser===true` in the same sort bucket as `leader`, so a member jumps position when an unrelated permission toggles. | `plugin.js:1186–1187` | Separate the sort keys; keep roster order stable and mark position changes explicitly. |
 | F-10 | **Medium** | The add-agent popover overhangs its column by 24 px (256 px box in a 240 px column; `.ts-dock` 264>239) and is the only discoverable path to adding a member. | `p15-1512-addpop-dark.png`; measurement §3.7 | 232 px box (or anchor to the column's start edge + 8 px inset) and an inline "add" affordance on the roster (contract P-22). |
@@ -237,7 +244,7 @@ trust daily. Medium = quality debt the premium bar will not pass. Nit = cosmetic
 | F-13 | **Medium** | Radii disagree: 6 px cards/controls, 4 px rail/avatar, 8 px tabstrip track, 999 px dots. | §3.11 | 6 px for all controls/surfaces, 2 px for micro-dots (contract P-15). |
 | F-14 | **Medium** | No loading states on the tabs that fetch (Tasks board, Files, Workflow render an empty dashed box while data is in flight), no skeletons. | `plugin.js:3481–3640`; `p15-1512-tab-files-dark.png` | Skeleton rows for each fetching tab; keep the existing degraded text (contract P-17). |
 | F-15 | **Medium** | CJK/localization is untested and the Latin metrics are the failure mode the rubric names: all body copy is 10–11 px with `truncate` on names and titles. | type census §1 C2 | Set the floor at 12–13 px for reading text and 14 px for any CJK-facing body; verify with a Korean/Japanese capture (contract P-06, §7). |
-| F-16 | **Medium** | The right panel duplicates the room's only durable task list nowhere: Tasks lists this room's work items and tells the user the durable board lives in native Kanban with no desktop surface ("ask an agent: @atlas show the board", `plugin.js:3489`). | `p15-1512-tab-*`; `plugin.js:3489` | Say what the panel *is* in its header and link the native board, or surface the board (contract P-18). |
+| F-16 | **Medium** | The right panel duplicates the room's only durable task list nowhere: Tasks lists this room's work items and tells the user the durable board lives in native Kanban with no desktop surface ("ask an agent: @atlas show the board", `plugin.js:3489`). | `p15-1512-tab-approvals-dark.png` (mirror disclaimer), `p15-1512-tab-files-dark.png`; `plugin.js:3489`, `3530–3545` | Say what the panel *is* in its header and link the native board, or surface the board (contract P-18). |
 | F-17 | **Nit** | The mention picker does not open on a lone `@`. | `plugin.js:2465–2468` | Open on a bare `@` with the full roster (`open === ''` treated as "show all"). |
 | F-18 | **Nit** | The mention picker spans the full 896 px column to choose from ≤4 names. | `p15-1512-mention-dark.png` (880×106) | Size to content, max 280 px, anchored to the caret side (contract P-21). |
 | F-19 | **Nit** | `.ts-row` and `.ts-linkcard` transition at 120 ms — below the declared 150–250 ms band. | plugin CSS `plugin.js:1959–1965` | 160 ms, `ease-out` (contract P-19). |
@@ -270,7 +277,7 @@ Each is a named rejection against `omh-frontend/references/taste-foundations.md`
    detail and empty-state copy (F-03, §1 C2).
 2. **Arrhythmic spacing** — two bases (6/8) plus 2/4/10 fillers; 10 padding values, 4 on-grid (§3.11).
 3. **Uniform grid for unequal content** — three peer columns where the middle one is the only growing
-   content; 88 %/77 % of the side columns is empty surface (F-05).
+   content; 98 %/77 % of the side columns is empty surface (F-05).
 4. **Placeholder gravity / empty states never designed** — one 11 px sentence for the whole empty room,
    one dashed box per tab, the right panel identical in empty and populated states (F-07).
 5. **Missing states** — no loading treatment while Tasks/Files/Workflow fetch; no `prefers-reduced-motion`
@@ -293,7 +300,8 @@ Each is a named rejection against `omh-frontend/references/taste-foundations.md`
 - **SDK primitive chrome is approximated** (§2.1); no finding rests on it.
 - **Streaming/live-event states** (delta coalescing, remote/browser badges, approvals rows) were not
   exercised; Phase 1's HUMAN-CHECK list (light theme, Stop click, approvals row, disable/re-enable) is
-  still only partly discharged — the Stop click and the approvals row remain unobserved.
+  still only partly discharged — the Stop click and a *populated* approvals row remain unobserved (the empty
+  Approvals mirror is captured and reviewed, §3.9).
 - **The user's window was in use.** No live capture was attempted in this run; the three live captures
   quoted are from the previous run's session at the same revision.
 
@@ -335,7 +343,7 @@ Each is a named rejection against `omh-frontend/references/taste-foundations.md`
       "suggestion": "Ship the plugin-owned semantic ramp (contract P-16) and verify both themes at 1512/1280."
     },
     {
-      "difference": "Two thirds of the surface is permanently empty: team column 88% flat (597px), right panel 77% (548px), feed 78%.",
+      "difference": "Two thirds of the surface is permanently empty: team column 98% flat (591px run), right panel 77% (544px run), feed 68%.",
       "suggestion": "Narrow fixed columns to 208/264, collapse the right column to a labelled strip below 1200, and put real content in both (P-01/P-18)."
     },
     {
@@ -343,7 +351,7 @@ Each is a named rejection against `omh-frontend/references/taste-foundations.md`
       "suggestion": "Full-width title, actions grouped primary/secondary/overflow with Remove separated, metadata collapsed; recapture agent-detail dark."
     },
     {
-      "difference": "The empty room is one 11px sentence in a 94%-flat feed with both side columns empty and the right panel identical to the populated state.",
+      "difference": "The empty room is one 11px sentence in a 99%-flat feed with both side columns empty and the right panel identical to the populated state.",
       "suggestion": "Design the empty state: what the room is, who leads, the two real next actions; recapture empty dark."
     },
     {
@@ -406,4 +414,34 @@ keyboard-first affordances, empty states that teach, and motion that only report
 **Explicitly rejected as insufficient (verdict-blocking in the QA card):** a one-note palette, weak
 hierarchy, cramped cards, ungrounded gradients, decorative filler, placeholder copy, and default-looking
 controls — the seven patterns named in §6 with their evidence.
+
+## 10. Evidence reconciliation (run 20)
+
+Every flat-share / dead-space figure in §1, §3 and §8 is now quoted from one reproducible metric —
+`p15-flatshare.py` → `p15-flatshare.json` (region rect inset 2 px on the x edges, modal paper colour,
+pixel share equal to paper, longest consecutive flat run; the definition sits in the script header so both
+the before and the after round measure the same thing). The earlier draft of this document quoted a first
+pass over the same PNGs with a looser row threshold; §1 C1, §3.1, §3.3, §3.5, §3.9, F-01, F-05, F-07 and
+the §8 JSON were re-measured and corrected here. Every correction moves in the same direction — the columns
+are emptier than the draft claimed (team 98 % vs 88 %, feed 68 % vs 78 %, rail 99 % vs 96 %) — so no verdict
+or axis deduction changes; the corrections matter because the contract's acceptance block (team flat-share
+< 70 %) is measured with this metric.
+
+Also verified for this revision:
+
+- **Capture lineage holds.** `~/.hermes/desktop-plugins/buzz-hive-dev/plugin.js` differs from
+  `worktree/plugin.js` (a6872c2) by exactly seven dev-identity lines — the `/hive-dev` route, the
+  `hive-dev.v2`/`hive-dev.v1` storage keys, and the `Buzz-Hive Dev` name/label/command strings — 26 diff
+  lines in total and no behavioural delta. The captures are therefore evidence for a6872c2.
+- **The metric is deterministic.** Re-running `p15-flatshare.py` over the committed PNGs reproduces
+  `p15-flatshare.json` exactly (byte-for-byte compare of the JSON payload).
+- **The clipping finding is DOM-verified, not eyeballed.** `p15-measurements.json` at 700 px lists three
+  clipped nodes — `.ts-col-team` 110>55, `.ts-strip` 71>55, `.ts-dock` 110>55 — with their text
+  (`Team 4/11`, `+ Add · 3 member(s)`); `truncated` is empty, so nothing else is cut.
+- **The Approvals tab is captured and reviewed** (§3.9), completing the card's tab list
+  (Tasks / Activity / Files / Approvals / Workflow). Its empty state is a disclaimer about a native surface,
+  which is now part of F-16 rather than an unobserved gap.
+- **The rail regime is measured, not inferred:** `.ts-rail` 47×164 at x597 with five 28×28 `Ta/Ac/Fi/Ap/Wo`
+  buttons and `.ts-col-right` 47 px wide at 700 px (`p15-measurements.json`).
+
 
