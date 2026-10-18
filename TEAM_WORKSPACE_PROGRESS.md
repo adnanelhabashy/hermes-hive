@@ -820,3 +820,28 @@ guard; media queries at 1240/1100/880/600; CJK body steps up to 14 px.
   untouched and no new persisted key was added.
 - The app's own token defect (`--ui-yellow` etc. defined only at `:root`) is worked around with
   the local `.dark` override pair rather than patched — contract §4 excludes it.
+
+## P1.5 REVISE round (FORGE, card `t_16740abd`) — 8 fixes from the 86/100 verdict
+
+Working notes, one block per fix, committed with that fix. Instrument for the numbers:
+`~/.hermes/kanban/workspaces/t_16740abd/probe.cjs` (FORGE's own read-only probe: SENTRY's
+`p15-real/{stub,boot}.js` doubles + the same pinned palette, 12 captures, writes only into the
+FORGE workspace). Before-state JSON: `probe-out-pre/measure.json`.
+
+### 1/8 F-1 — Add-agent popover anchored inside its column
+
+Root cause measured, not guessed: `.ts-addpop`'s containing block is the trigger wrapper
+(`.relative` in the dock), which starts at the dock's `--ts-s3` gutter (x=12), so
+`inset-inline-start: var(--ts-s2)` put the box at left=20 and a 192px box ended at right=212 on a
+208px column (inner edge 207). Fix: `inset-inline-start: calc(var(--ts-s2) - var(--ts-s3))` — the
+declared 8px gutter is measured from the column's inner edge, and the box keeps its 192px width.
+
+Measured (`probe --only=addpop`, 1512 dark):
+```
+            before            after
+addpopLeft   20                8
+addpopRight 212               200      (column inner edge 207)
+inside      false             true
+insideInner false             true
+.ts-col-team scrollWidth/clientWidth 212/207 -> 207/207
+```

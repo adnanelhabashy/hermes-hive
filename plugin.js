@@ -2126,7 +2126,15 @@ const HIVE_TS_CSS = `.ts-workspace{
    has room: ABOVE the dock in the column (the dock is the column's bottom row)
    and BELOW it in the sheet (the sheet's panel is content-height, pinned to the
    sheet's top, so its dock sits near the top). P-22 narrows it to its column. */
-.ts-addpop{position:absolute;inset-inline-start:var(--ts-s2);bottom:100%;z-index:40;margin-bottom:var(--ts-s2);width:min(232px,calc(var(--ts-team-w) - var(--ts-s4)));padding:var(--ts-s2);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-elevated)}
+/* P1.5 F-1: the popover's containing block is the trigger wrapper (the
+   .relative div in the dock), NOT the column — and that wrapper starts after
+   the dock's own --ts-s3 gutter. Declaring inset-inline-start:var(--ts-s2)
+   therefore measured the 8px gutter from the wrapper, not from the column, and
+   a 192px box landed at right=212 on a 208px column (4px outside it, 5px past
+   its 1px inner edge). Subtract the gutter the containing block already
+   carries, so the declared 8px is measured from the column's inner edge and the
+   box can never reach the border. */
+.ts-addpop{position:absolute;inset-inline-start:calc(var(--ts-s2) - var(--ts-s3));bottom:100%;z-index:40;margin-bottom:var(--ts-s2);width:min(232px,calc(var(--ts-team-w) - var(--ts-s4)));padding:var(--ts-s2);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-elevated)}
 /* Inside a sheet the popover's containing block is its own trigger wrapper (a
    ~34px button), so a percentage width collapsed the box to 18px — the same
    "sliver" defect F-P1-R1 fixed in the column. Bound it to the sheet's own width
