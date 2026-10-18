@@ -681,3 +681,85 @@ The 15-row checklist in `TEAM_WORKSPACE_DESIGN-P2.md` §11 (P2-A1…P2-A15), plu
 the three BLOCKED-tolerated rows B1-B3 with their stated reasons. The
 independent-reproduction duty: the T2-T9 isolation test must be re-run from the
 raw room keys (`hive.v3:*`), not from the UI's claims about them.
+## 2026-10-18 — Phase 1.5 UX quality pass — critique + redesign contract (SENTRY)
+
+Trigger: the user's verdict on Phase 1 — the UI *"doesn't feel practical"* despite
+passing every checklist row. Board card `t_e3b52d33`. **No product code changed.**
+
+1. **Capture set (16 renders + 3 live).** Built a deterministic render pipeline
+   against this revision: `p15-harness.cjs` (the plugin's `HIVE_TS_CSS` extracted
+   verbatim + the real desktop stylesheet + a replica of the `.ts-*` render tree),
+   `p15-render.cjs` (one headless Chrome over CDP: exact viewport width, dsf=2,
+   PNG + measured DOM geometry per capture), `p15-pixels.py` (rendered-pixel
+   evidence from the PNG bytes). Captures at 1512/1456/1200/1000/700 dark, 1280
+   light, plus empty / agent-detail / add-popover / @-mention / four right-panel
+   tabs / both overlay sheets; saved in `sentry-probe/p15-captures/`.
+2. **Fidelity contract, stated in the critique and verified.** Plugin layer and
+   real stylesheet are exact; geometry/type are read back from the rendered DOM;
+   the runtime skin palette is *pinned* from the live capture (panel `#2b243b`
+   `(43,36,59)` measured in both the live team and right columns — the harness
+   renders back `(43,36,59)`, an exact match); SDK primitive chrome is
+   approximated and no finding rests on it. Light mode has no live capture to
+   sample (this machine runs dark only) — flagged as approximate.
+3. **Live-parity check.** The live window's surface seams (x = 300/530/1120/1430)
+   put the real plugin surface at ~1156px → the live app runs the ≤1100px regime,
+   where the entire Work half collapses to a 48px rail labelled `Ta Ac Fi Ap Wo`.
+4. **Four measured causes** behind "doesn't feel practical": (C1) fixed
+   four-column shell — team column 88% flat background (597px), right panel 77%
+   (548px), feed 78%; (C2) five type sizes all ≤14px with 10px dominant (40 leaf
+   nodes) because `HIVE_T.xs=10px`; (C3) a 240px roster whose expanded detail
+   truncates the work-item title to 114px; (C4) narrow regimes clip instead of
+   adapt (at 700px `.ts-strip` 71>55 and `.ts-dock` 110>55 → "TEAM 4", "+ Add").
+5. **19 ranked findings** (2 Blocker, 6 High, 8 Medium, 3 Nit) with a capture +
+   measurement behind each. Verified in source, not repeated: the `leader` flag is
+   reachable only as the 6th of 7 buttons in the expanded card and its whole effect
+   is sort-to-top + a word in the 10px meta line (`plugin.js:2892–2899`, `3253`,
+   `3267`, `1184–1191`); and granting browser access silently reorders the roster
+   because `browser` shares the leader sort rank (`1186–1187`). Also verified: the
+   card's `--ui-danger`/`--ui-warning` fallback-hex instruction is already
+   satisfied (0 references in `plugin.js`); the real token defect is that
+   `--ui-yellow/-purple/-orange/-warm` are defined only at `:root` while
+   `--ui-red/-green` are defined in `:root.dark` too, so `IN REVIEW` is `#c08532`
+   in both themes.
+6. **Verdict: REVISE 41/100** (axis table + `differences` pairs in the critique,
+   per `omh-visual-qa`'s verdict contract; 90 is the pass line). Five anti-slop
+   patterns rejected with evidence; a `comparative_quality_rubric` against AionUI
+   Team Mode (interaction model) and Linear/Stripe/Supabase-class craft.
+7. **Redesign contract** (`TEAM_WORKSPACE_DESIGN-P1.5.md`): 24 surgical patches,
+   token-level — one 4/8 spacing scale, a six-step type scale (10/11/12/13/15/20)
+   with a CJK step-up, one control radius, a plugin-owned theme-aware semantic
+   ramp, the responsive ladder that degrades the roster before Work, embedded
+   empty states, grouped agent actions, and one selection language. No new files,
+   no storage change, no architecture change; P2's `hive.v3:*` scheme untouched.
+8. **Evidence plan for the next round**: the exact 14 captures FORGE must retake,
+   plus numeric acceptance (type census == {10,11,12,13,15,20}; zero
+   `scrollWidth > clientWidth` at 700/1000/1200/1456/1512; `IN REVIEW` differs
+   between themes; skeleton + CJK + hover/focus captures now required before PASS).
+
+### Hand-back state
+
+```
+TEAM_WORKSPACE_P1.5-CRITIQUE.md     (new)
+TEAM_WORKSPACE_DESIGN-P1.5.md       (new)
+TEAM_WORKSPACE_PROGRESS.md          (this entry)
+p15-harness.cjs / p15-render.cjs / p15-pixels.py   (new — the capture pipeline, committed
+                                                    so the retake is reproducible)
+plugin.js                           UNCHANGED  sha256 14e0d9618f8546a56281a723a38c877822f1ab9c1dcc0a5f0ce69dfc38dfcb93
+                                               (== `git show HEAD:plugin.js`; `git status` shows no modification)
+test.cjs                            UNCHANGED (node test.cjs -> ALL PASS 292/292)
+smoke-render.mjs                    UNCHANGED
+```
+
+Captures live outside the repo at `~/Developer/hive-team-studio/sentry-probe/p15-captures/`
+(16 harness PNGs + `p15-measurements.json` + `p15-pixel-evidence.json`), alongside the
+three live-app captures from the previous run.
+
+**Not claimed:** no motion/hover/focus/keyboard evidence, no CJK capture, no live
+light render, and the Stop click / approvals row from Phase 1's HUMAN-CHECK list are
+still unobserved. A PASS is not available on this round.
+
+### Left to FORGE (card `t_5ed602ed`)
+
+Implement the 24 patches, then retake the 14 captures named in the contract's §3 at
+the same widths/states/themes and re-run the numeric acceptance block; the QA round
+rescores against the new captures.
