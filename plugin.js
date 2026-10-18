@@ -2170,6 +2170,13 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-workspace > .ts-col-team .ts-strip-label{display:none}
 .ts-workspace > .ts-col-team .ts-strip-meta{display:none}
 .ts-workspace > .ts-col-team .ts-strip-count{display:inline-flex}
+/* P1.5 F-2: avatar-only means the dock's labelled control no longer fits — the
+   measured 'Add agent' button (92px) plus the dock's 12px gutter made the 56px
+   column report scrollWidth 104 vs clientWidth 55. Drop the label and tighten
+   the dock gutter so the column's own content fits its box (the button keeps
+   its title/aria-label, and the popover it opens is a separate box). */
+.ts-workspace > .ts-col-team .ts-addlabel{display:none}
+.ts-workspace > .ts-col-team > .ts-dock{padding-inline:var(--ts-s2)}
 }
 @media (max-width:880px){
 .ts-workspace{--ts-team-w:48px;--ts-right-w:var(--ts-rail-w)}
@@ -2957,8 +2964,12 @@ function HiveAddMember() {
     jsx(Button, {
       variant: 'ghost', size: 'sm', onClick: toggle,
       'aria-haspopup': 'dialog', 'aria-expanded': open ? 'true' : 'false',
+      title: 'Add agent', 'aria-label': 'Add agent',
       disabled: members.length >= HIVE_MAX_MEMBERS && !open,
-      children: jsxs('span', { children: [jsx(icons.Plus, { size: 13, className: 'mr-1 inline' }), 'Add agent'] })
+      // P1.5 F-2: the label is its own node so the avatar-only column (<=1100)
+      // can drop it and keep the control inside its 56/48px column; the title +
+      // aria-label above keep the accessible name when the text is hidden.
+      children: jsxs('span', { className: 'flex items-center', children: [jsx(icons.Plus, { size: 13 }), jsx('span', { className: 'ts-addlabel ml-1', children: 'Add agent' })] })
     })
   ] })
 }

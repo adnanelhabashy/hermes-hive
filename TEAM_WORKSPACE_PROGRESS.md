@@ -845,3 +845,22 @@ inside      false             true
 insideInner false             true
 .ts-col-team scrollWidth/clientWidth 212/207 -> 207/207
 ```
+
+### 2/8 F-2 — collapsed-column overhang at 1000/700
+
+Measured cause: the offending content was the dock's labelled Add-agent control, not hidden roster
+text — 92px button + 12px dock gutter = scrollWidth 104 on a 56/48px column. Fix: the label is now
+its own node (`ts-addlabel`) and is dropped in the <=1100 avatar-only block, with the dock gutter
+tightened to `--ts-s2`; the button keeps `title`/`aria-label` so its name survives. Nothing is
+`display:none`d that a user needs: the control stays reachable, it just loses its text.
+
+Measured (`probe --only=-full`):
+```
+width  .ts-col-team sw/cw   .ts-dock sw/cw
+       before     after     before    after
+1000   104/55     55/55     104/55    55/55
+700    104/47     47/47     104/47    47/47
+1512   207/207    207/207   207/207   207/207   (unchanged)
+```
+Remaining `scrollWidth > clientWidth` hits at 1000/1200 are `text-overflow: ellipsis` on fixed-width
+rows (`.ts-row-name`, `.ts-strip-meta`) — the intended device, F-3 addresses the row-name one.
