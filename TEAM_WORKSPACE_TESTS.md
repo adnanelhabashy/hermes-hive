@@ -1264,3 +1264,48 @@ Dev copy: `~/Developer/hive-team-studio/sync-dev.sh` re-run against `196330e` �
 
 **Not verified here:** nothing visual. No captures were re-taken and no numeric acceptance was
 measured — that is the QA round (card `t_40252ce7`). PASS is not claimed by FORGE.
+
+---
+
+## P1.5 visual QA (SENTRY, card `t_40252ce7`)
+
+**Revision under test:** `00934f2` (branch `team-studio`), worktree clean. Live `buzz-hive`
+untouched (`929548d`, plugin.js mtime Oct 17 16:15, sha256 `b968e412…`). Verdict at the end of
+this section; evidence slices are appended in the order they were produced.
+
+### A. Suites + diff review + transform faithfulness
+
+Re-run by SENTRY at `00934f2` (whole worktree re-read, not cited from FORGE):
+
+```
+$ node test.cjs                                        -> ALL PASS 312/312   (exit 0)
+$ node smoke-render.mjs                                -> ALL PASS 85/85     (exit 0)
+$ node css-layout-probe.cjs --widths=1200,1000,700,600,500
+                                                       -> ALL PASS            (exit 0)
+```
+
+Diff review, `git diff a45ee1d..HEAD` (my design commit -> FORGE's HEAD). Changed files:
+`plugin.js`, `test.cjs`, `smoke-render.mjs`, `css-layout-probe.cjs`, and three docs — all inside
+the contract's patch surface (plugin.js only, plus suite updates it authorises). No new file, no
+new module, no storage-key touch (`grep` for `hive.v3|hive.v2|localStorage|sessionStorage` over the
+plugin diff: 0 hits). The only new literals in `HIVE_TS_CSS` are `--ts-warn:#b1730f / #e0a94c` and
+`--ts-info:#1f5fd0 / #7aa2ff` — the contract's own theme-aware §1 token pair, not a hardcoded-colour
+violation. `--ui-danger/--ui-warning` fallback hexes are gone (asserted by `smoke-render.mjs`).
+
+Two hunks outside the CSS block are storage-adjacent and were checked against the contract, not
+assumed: `hivePersist()` and `hiveBootHydrate()` each gain one field,
+`order: Number.isFinite(Number(m.order)) ? Number(m.order) : null`. That is contract P-04.3
+("a stable `order` (persisted position, defaulting to insertion order)") — a member **attribute**,
+so `hive.v2` keeps its shape and no new key appears. Not a deviation.
+
+**Transform faithfulness** (the `t_cd258c97` check, re-done by SENTRY with
+`sentry-probe/p15-sync-faithful.py`):
+
+```
+forward  transform(worktree/plugin.js) == buzz-hive-dev/plugin.js : 0 diff lines (4303 lines)
+reverse  untransform(dev copy)         == worktree/plugin.js      : 0 diff lines
+residual bare "buzz-hive" lines in dev copy                       : 0
+```
+
+So `/hive-dev` is the worktree build under an invertible identity transform, and a live capture
+there is evidence for `00934f2`. (Captures below are harness renders of the same file; see §C.)
