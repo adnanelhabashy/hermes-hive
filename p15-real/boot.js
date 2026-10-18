@@ -9,6 +9,9 @@ import { mount } from '/stub.js'
 import plugin from '/plugin.js'
 
 const H = globalThis.__HIVE_HARNESS__ || {}
+/* closed Radix menus live in a portal the harness does not have; hidden unless
+   the capture is the one that asks for them inline (contract row 9). */
+globalThis.__HIVE_INLINE_MENUS__ = /agent-detail/.test(String(H.state || ''))
 const errors = globalThis.__HIVE_ERRORS__ || (globalThis.__HIVE_ERRORS__ = [])
 const store = Object.assign({}, H.storage || {})
 let sets = 0

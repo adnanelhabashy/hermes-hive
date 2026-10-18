@@ -1414,3 +1414,126 @@ Two readings that must not be overclaimed:
   contract's "zero elements with scrollWidth > clientWidth" is therefore *not* met as literally worded;
   what matters for the verdict is whether any hit is *unintended* clipping, which §E checks against the
   captures.
+
+### D. Three harness defects found and fixed before scoring (the instrument, not the product)
+
+The first after-round (prefixes `after`/`before`, now in `sentry-probe/p15-captures/superseded/`) produced
+three readings that would have been scored as product defects. All three were the driver's fault; the
+driver was fixed and both sets re-taken (`after-*` / `before-*` are the final, canonical set):
+
+| symptom in the first run | real cause | fix in `p15-real/` |
+|---|---|---|
+| closed `Teams`/`Settings`/project menus painted inside the toolbar, so 1000/700 reads "top chrome overlapping, unreadable" | the app renders those in a Radix portal; the stub flattened them inline and always-visible | `stub.js` `DropdownMenuContent`/`SelectContent` return null unless `__HIVE_INLINE_MENUS__` (set in `boot.js`, true only for the `agent-detail` capture whose contract row counts row actions). 19 fewer nodes in every other state; `700-full-dark` clipping 4 -> 2 |
+| `after-1512-hover-dark`: row background stayed `rgba(0,0,0,0)` -> "no hover state" | `:hover`/`@media (hover:hover)` cannot be reached by synthetic `MouseEvent` | driver now resolves the row's centre and sends a real `Input.dispatchMouseEvent` (mouseMoved). Hover row background is now `rgb(53,45,71)` = `--ui-row-hover-background` #352d47 |
+| `after-1512-mention-dark`: no `ts-mention*` node anywhere -> "mention picker missing" | the stub wires React `onChange` to the DOM `change` event; the driver only fired `input`, so the plugin's `onChange` never ran and `$hiveMentionOpen` stayed null | driver now uses the native value setter, sets the caret, and fires `input` + `change`. The picker renders (`ts-mention`, `ts-mention-row`, `ts-mention-model`), rows `@default/@arch/@forge/@you` with meta, active row edge-marked, ≤280px |
+
+So the mention picker and the hover state are **observed**, not assumed — both are required for PASS by
+the contract's §3. The `agent-detail` capture's row-action items remain inline by that same flag, so its
+6 menu entries are the menu's contents, not 6 permanently visible row buttons.
+
+Determinism/reproducibility: re-running the committed driver at the same revision reproduces a capture
+byte-for-byte (`recheck-1512-full-dark.png` sha256 `7a8b1273…` == `after-1512-full-dark.png`).
+
+Final set provenance: driver `p15-real/{p15-real.cjs,stub.js,boot.js}` at `9fc3a98`+`4ea7b1d`; plugin under
+test `d2a5f7c6…` (after, `00934f2`) and `14e0d961…` (`2f44398:plugin.js`, before). 20 captures each,
+`ready=true`, `errors=[]`, `driveLog` recorded per capture.
+
+### E. Scored round
+
+Rubric axes (the card's nine, then the added polish axes). Each number is a judgement over the 20
+captures named above; the deductions are in §F.
+
+```
+hierarchy                       9/10   feed is unambiguously primary at every width; the right panel still
+                                      competes with four tabs + a board + a workflow card
+density                         9/10   roster and feed comfortable; top bar and right panel are tight
+spacing rhythm                  9/10   one 4px scale; gap census 4/6/8px; no arbitrary paddings left
+alignment                       9/10   column seams and card left-edges consistent at 1512/1456/1200/1000/700
+type scale                      9/10   the ad-hoc 10.4px step is gone; plugin-owned text is 10/11/12/13/15/20
+color discipline                8/10   one accent, hairline cards, theme-aware state ramp (IN REVIEW #e0a94c
+                                      dark / #b1730f light); app-supplied profile colours still fill whole
+                                      message panels, which is heavy on the light surface
+top-5 daily actions             8/10   send / add-agent / agent-detail / tabs fine; tab groups are three
+                                      separate strips, and pin has no roster control (see F-8)
+dark+light integrity            9/10   tokens, borders, shadows and the amber state all flip; no dark patch
+                                      survives on the light capture
+responsive (each captured width) 8/10  css-layout-probe ALL PASS incl. 500px; roster collapses to avatars at
+                                      1000; two collapsed-width container overhangs remain (F-2, F-4)
+typography craft                9/10   real scale and weights, -apple-system/JetBrains Mono split is correct
+spacing rhythm consistency      9/10   same as above, measured
+motion discipline               n/a    no motion capture exists in either set; named as owed evidence, not scored
+empty/loading/error craft       9/10   empty room (heading 20px + line + Add an agent), approvals tab, and
+                                      the tab states are all designed, not bare strings
+focus/hover/active states       9/10   composer focus ring `solid 2px`, roster hover = row-hover token,
+                                      toolbar-chip hover rule present
+agent identity design           9/10   deterministic accent + dot + PINNED chip + model meta on one line
+
+score 86/100   ->  REVISE
+```
+
+```json
+{
+  "score": 86,
+  "verdict": "REVISE",
+  "differences": [
+    { "difference": "The Add-agent popover's right edge is 4px outside the team column it belongs to (measured right=212 vs column right=208), which the contract's numeric acceptance forbids.", "suggestion": "Anchor `.ts-addpop` to the column's inner edge (offset by its 1px border) and re-measure `addpopInsideColumn` until `inside: true`." },
+    { "difference": "At 1000px the collapsed team column still overhangs: `.ts-col-team` scrollWidth 104 vs clientWidth 55 and `.ts-dock` the same, so the contract's 'zero elements with scrollWidth > clientWidth' is not met there.", "suggestion": "Clip the collapsed regime's inner wrapper (`overflow:hidden` in the ≤1180px media block) so hidden content stops widening the box; re-run the census at 1000/700." },
+    { "difference": "Right-panel work-item titles are cut to one line at 280px ('Rewrite the citation block to the Febr…', 'Verify the 1494 attribution against so…'), so the panel cannot be scanned for what the work is.", "suggestion": "Allow two lines (`-webkit-line-clamp:2`) for `.ts-row-name` at ≥1200px, keeping one-line ellipsis in the collapsed rail." },
+    { "difference": "`.ts-toolbar-title` overflows its own box at 700px (scrollWidth 30 vs clientWidth 28), the one unexplained hit in the numeric acceptance at that width.", "suggestion": "Raise its `max-width` (or drop the project chip) at the narrow step so the title box never under-runs its text." },
+    { "difference": "The Approvals panel explains the architecture to the user: 'server verbatim' and 'it mirrors the queue, it does not own it' read as implementation notes.", "suggestion": "Replace with one user-facing line ('Approvals are answered in the app's own prompt.') and keep the detail in the code." },
+    { "difference": "The toolbar shows 'No project' twice (a Select placeholder next to a second label), which reads as a duplicate control.", "suggestion": "Render the placeholder only when no project is selected, or drop the second chip." },
+    { "difference": "Micro-meta the user must read sits at the quaternary text token (right-panel '0s', strip meta, composer hint) and was flagged as low-contrast in three separate reads.", "suggestion": "Move it to `--ui-text-tertiary`; keep quaternary for decoration only." },
+    { "difference": "Pin has no control on the roster row — the only pin affordance is inside the Add-agent popover — so a 'PINNED' member cannot be unpinned from where it is shown.", "suggestion": "Make the PINNED chip a toggle (reuse the `ts-addpop-pin` anatomy) or expose the row's pin in its existing actions menu." }
+  ]
+}
+```
+
+### F. Contract status, missing evidence, and the P1 HUMAN-CHECK rows
+
+Verified in the final captures (evidence each): type scale adopted and the 10.4px step gone (§C census);
+spacing/radius on the 4px/6px scale (§C); symbol-strip labels + count (`ts-strip-label/-count/-meta`,
+`after-1512-full-dark`); roster anatomy + leader chip (`ts-chip` PINNED, row name/meta); toolbar hierarchy
+(`ts-toolbar-title/-chip/-divider`, `toolbarControls`); rail with persistent caption (`ts-rail-title`);
+tabstrip survives to 1000 (`tabs[0].rect` present, strip labels hidden by design); empty states designed
+(`after-1512-empty-dark`); add-agent and mention pickers both inside their columns; semantic ramp
+theme-aware (`inReview` #e0a94c vs #b1730f); flat-share team 0.282 / right 0.32 (limits 0.70 / 0.65); CJK
+clean with 14px/22.75px body and no clipping (`cjkSample`); focus ring and hover token; clipping at
+agent-detail down 13 -> 5 vs before; raw markdown no longer rendered (before showed `## The Semicolon`).
+
+Not verified — owed captures (PASS is unavailable until these exist):
+
+1. **P-22 per-row pin toggle.** `after-1512-addpop-dark` renders `Every profile is already in the room.`
+   with no candidate rows, so the pin toggle has no evidence. The capture's own DOM says the popover
+   opened and the search field rendered, but the profile list came back empty; the harness has no
+   `window.hermesDesktop.api` double for `/api/profiles`, while every *other* host surface is seeded.
+   Cause recorded, not resolved: this run stops short of claiming the toggle works or that it is broken.
+   Recapture `after-1512-addpop-dark` with a seeded `/api/profiles` that returns at least one profile
+   outside the room, then read `data-pin` / `aria-pressed` on `.ts-addpop-row`.
+2. **P-19 motion.** No capture in either set records a transition (settled frames only). Owed: a
+   before/during/after triple for one transition, or P-19 stays unscored rather than assumed.
+3. **The 'zero elements with scrollWidth > clientWidth' wording** at 700/1000/1200/1456/1512: 2–5 hits
+   remain per width. Most are `text-overflow: ellipsis` on fixed-width rows, which is the intended
+   device and is recorded separately in `truncated[]`; the two that are not are F-2 and F-4 above.
+
+P1 HUMAN-CHECK rows (card step 4), each with what closed it or why it did not:
+
+```
+light-theme repaint      CLOSED to harness evidence: after-1280-light-full-light and
+                         after-1280-light-addpop-light, tokens/borders/shadows flipped, IN REVIEW
+                         #b1730f vs #e0a94c. Not observed in the live app (harness page + app
+                         stylesheet); the live repaint itself stays unobserved.
+A4 Stop against a live   NOT CLOSED. Needs the running desktop gateway port + token and a member
+session                  mid-turn; the harness stubs the host, so a Stop click there would prove
+                         nothing. Card instructs not to fight the user for the window; the gateway's
+                         loopback root answered 401 on the port I could see (8789), so the live path
+                         was not available in this run.
+disable -> re-enable     NOT CLOSED. A GUI action in the user's own app; a headless run has no
+toggle                   approval channel. Previously recorded facts still hold (separate storage
+                         namespace, dispose asserted by smoke-render).
+native panes unaffected  Unchanged by construction: the implementation diff touches plugin.js and the
+                         suites only (checked in §A); the harness has no native panes to photograph.
+```
+
+Suite re-run at `00934f2` (SENTRY): `test.cjs` 312/312, `smoke-render.mjs` 85/85,
+`css-layout-probe.cjs --widths=1512,1456,1200,1000,700,600,500` -> `ALL PASS — every reachability
+expectation holds across 1512/1456/1200/1000/700/600/500 px`.

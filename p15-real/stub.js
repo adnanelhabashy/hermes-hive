@@ -368,12 +368,17 @@ export function TabsTrigger({ value, className, children, style, ...rest } = {})
     ...rest, style, children
   })
 }
-/* Dropdown/Select: the app renders these in a Radix portal. The harness keeps
-   the trigger in flow and (for the agent-detail capture) exposes the menu items
-   inline when `open` is forced by the state seed, so the action count is real. */
+/* Dropdown/Select: the app renders these in a Radix portal, closed by default.
+   The harness has no portal, so a closed menu's content is hidden here exactly
+   as the portal hides it — otherwise a closed menu would paint inside the
+   toolbar and be read as a layout defect. The single exception is the
+   agent-detail state, whose contract row asks for the row's actions to be
+   counted; __HIVE_INLINE_MENUS__ (set from the capture state in boot.js) forces
+   that one case inline. */
 export function DropdownMenu({ children }) { return jsx('div', { className: 'inline-flex', 'data-dropdown': true, children }) }
 export function DropdownMenuTrigger({ children, ...rest }) { return jsx('span', { className: 'inline-flex', ...rest, children }) }
 export function DropdownMenuContent({ children, className, ...rest } = {}) {
+  if (!globalThis.__HIVE_INLINE_MENUS__) return null
   return jsx('div', { className: cn('absolute z-30 min-w-[8rem] rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg-elevated)] p-1 shadow-lg', className), ...rest, children })
 }
 export function DropdownMenuItem({ children, onSelect, ...rest } = {}) {
@@ -383,7 +388,10 @@ export function DropdownMenuSeparator() { return jsx('div', { className: 'my-1 h
 export function Select({ value, children }) { return jsx('div', { className: 'inline-flex flex-1', 'data-select': value, children }) }
 export function SelectTrigger({ className, children, ...rest } = {}) { return jsx('button', { type: 'button', className: cn(FIELD, 'items-center justify-between', className), ...rest, children }) }
 export function SelectValue({ placeholder }) { return jsx('span', { className: 'truncate text-[var(--ui-text-quaternary)]', children: placeholder }) }
-export function SelectContent({ children, className, ...rest } = {}) { return jsx('div', { className: cn('flex flex-col', className), ...rest, children }) }
+export function SelectContent({ children, className, ...rest } = {}) {
+  if (!globalThis.__HIVE_INLINE_MENUS__) return null
+  return jsx('div', { className: cn('flex flex-col', className), ...rest, children })
+}
 export function SelectItem({ children, ...rest } = {}) { return jsx('div', { className: 'truncate px-1 py-0.5 text-xs', ...rest, children }) }
 
 /* useQuery: the plugin's read path through TanStack Query. Seeded per capture. */

@@ -285,7 +285,8 @@ function serve () {
         storage: { 'hive.v2': state.blob },
         host: Object.assign({}, HOST, state.host || {}),
         queries: state.queries || {},
-        theme
+        theme,
+        state: q.get('state') || 'full'
       }
       const palCss = ':root{' + Object.entries(PALETTE[theme] || {}).map(([k, v]) => `${k}:${v}`).join(';') + '}'
       const html = `<!doctype html><html class="${theme}" style="height:100%"><head><meta charset="utf-8">
@@ -319,10 +320,19 @@ const DRIVE = {
   hover: (sel) => `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'missing'
      el.setAttribute('data-hovered','true'); el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}))
      el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true})); return 'hovered' })()`,
+  /* :hover and @media (hover:hover) cannot be reached by synthetic events; this
+     returns the element's centre so the driver can send a real mouse move. */
+  hoverPoint: (sel) => `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return null
+     const r = el.getBoundingClientRect(); return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }) })()`,
   focus: (sel) => `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'missing'; el.focus(); return 'focused' })()`,
   type: (text) => `(() => { const el = document.querySelector('[data-testid="hive-composer"]'); if (!el) return 'missing'
-     el.focus(); el.value = ${JSON.stringify(text)}
-     el.dispatchEvent(new Event('input', { bubbles: true })); return 'typed' })()`
+     el.focus()
+     const setter = Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value').set
+     setter.call(el, ${JSON.stringify(text)})
+     try { el.selectionStart = el.selectionEnd = el.value.length } catch (e) {}
+     el.dispatchEvent(new Event('input', { bubbles: true }))
+     el.dispatchEvent(new Event('change', { bubbles: true }))
+     return 'typed(' + el.value + ')' })()`
 }
 
 async function main () {
@@ -368,6 +378,16 @@ async function main () {
       const [op, param] = Object.entries(step)[0]
       const r = await cdp.send('Runtime.evaluate', { expression: DRIVE[op](param), returnByValue: true }, sessionId)
       driveLog.push(op + '(' + String(param).slice(0, 40) + ') -> ' + (r.result && r.result.value))
+      if (op === 'hover') {
+        /* a real pointer is the only way to reach :hover / @media (hover:hover) */
+        const pt = await cdp.send('Runtime.evaluate', { expression: DRIVE.hoverPoint(param), returnByValue: true }, sessionId)
+        const val = pt.result && pt.result.value
+        if (val) {
+          const p = JSON.parse(val)
+          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y, buttons: 0 }, sessionId)
+          driveLog.push('mouseMoved(' + p.x + ',' + p.y + ')')
+        } else driveLog.push('mouseMoved(point missing)')
+      }
       await sleep(220)
     }
     await sleep(260)
