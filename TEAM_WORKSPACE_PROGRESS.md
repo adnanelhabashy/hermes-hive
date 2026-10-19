@@ -980,3 +980,15 @@ Real-DOM captures run for this round went to
 `~/.hermes/profiles/forge/cache/scratch/{f6verify,pinrun}/` — SENTRY's `p15-captures/` was not
 written to. Not re-verified here (SENTRY owns them): the light-theme repaint, motion (P-19), and the
 add-popup row pin toggle that needs a seeded `/api/profiles`.
+
+## P1.5 QA round 2 — F-9, add-agent popover loading state (FORGE)
+
+`HiveAddMember` had three render branches but only two states, so `loadState === 'loading'` fell into
+`HiveRenderOptions`, whose `opts.length === 0` arm paints "Every profile is already in the room." —
+for the whole `/api/profiles` fetch the popover told the user the room was full. `loading` now owns a
+branch: `data-ts-addpop-loading`, `aria-busy="true"`, `role="status"`, "Loading profiles…" and two
+static `.ts-skel-row` rows (no shimmer — Phase 9 owns motion); `error` and the empty copy are
+untouched. New `f9-probe.mjs` (real `plugin.js` via the `smoke-render.mjs` SDK stub, popover open,
+`loadState`/`profiles` forced) passes 13/13 — loading paints its own copy and skeletons and never the
+empty copy, idle paints rows, idle+empty keeps the empty copy, error keeps Retry, and `load()` enters
+`'loading'` before awaiting the fetch. No `test.cjs` case: pure-function harness, no render coverage.
