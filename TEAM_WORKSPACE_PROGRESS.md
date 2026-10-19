@@ -992,3 +992,26 @@ untouched. New `f9-probe.mjs` (real `plugin.js` via the `smoke-render.mjs` SDK s
 `loadState`/`profiles` forced) passes 13/13 — loading paints its own copy and skeletons and never the
 empty copy, idle paints rows, idle+empty keeps the empty copy, error keeps Retry, and `load()` enters
 `'loading'` before awaiting the fetch. No `test.cjs` case: pure-function harness, no render coverage.
+
+## P1.5 F-9b — every Add-an-agent entry point drives the fetch (FORGE)
+
+`plugin.js` unchanged at `7d6d704`, sha256
+`0f4791bda29c3b032337522923e7e30a10d654c1ddc3ef6f6bc03974852a6033` — the two probe corrections and
+these notes are uncommitted in the worktree (`f9-probe.mjs`, `f9b-probe.mjs`, both docs).
+
+```
+$ node test.cjs                              -> ALL PASS 312/312
+$ node smoke-render.mjs                      -> ALL PASS 85/85
+$ node f9-probe.mjs                          -> ALL PASS 13/13
+$ node f9b-probe.mjs                         -> ALL PASS 24/24
+$ node f9b-probe.mjs --plugin <6dc8c89>      -> FAIL 8/24   (the red control)
+$ node css-layout-probe.cjs --widths=1000    -> ALL PASS (exit 0)
+$ bash ~/Developer/hive-team-studio/sync-dev.sh -> synced buzz-hive-dev/plugin.js, no residual identities
+```
+
+`f9b-probe.mjs` clicks the two REAL CTAs in the real DOM. It reaches a genuinely empty room by failing
+`session.create` — a normal boot mints @default and appends "joined the room", so TsRoomEmpty never
+renders and the room CTA was previously untestable. Both probes were corrected to the F-9b render
+contract (`loadState` + `loaded`), not weakened: `f9-probe.mjs`'s settled fixtures now set `loaded`, and
+`f9b-probe.mjs` clicks inside `act()` so the assertion is not one commit behind the click. No CSS
+touched, so the 1000px layout probe is a regression check only.

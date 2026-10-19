@@ -11,6 +11,12 @@
  *   idle + genuinely empty list -> "Every profile is already in the room."
  *   error   -> "Couldn't load profiles." + Retry
  *
+ * P1.5 F-9b split the render input in two: `loadState` (the fetch's state) and
+ * `loaded` (whether a fetch has ever settled). The settled fixtures below force
+ * BOTH, because "idle with rows" only means anything once a fetch has settled —
+ * before that the popover deliberately paints loading (the CTA bug). The
+ * never-settled case is f9b-probe.mjs §B/§C.
+ *
  * The three states are the ones `load()` produces; this proves the RENDER is
  * branch-correct. That `load()` enters 'loading' before awaiting the fetch is
  * asserted separately from the source (the click is not reachable in SSR).
@@ -35,9 +41,11 @@ const raw = fs.readFileSync(PLUGIN, 'utf8')
 const OPEN_FROM = 'const $tsAddOpen = atom(false)'
 const OPEN_TO = 'const $tsAddOpen = atom(true)'
 const LOAD_FROM = "const [loadState, setLoadState] = useState('idle')"
+const LOADED_FROM = 'const [loaded, setLoaded] = useState(false)'
 const PROFILES_FROM = 'const [profiles, setProfiles] = useState([])'
 if (!raw.includes(OPEN_FROM)) throw new Error('$tsAddOpen patch site not found')
 if (!raw.includes(LOAD_FROM)) throw new Error('loadState patch site not found')
+if (!raw.includes(LOADED_FROM)) throw new Error('loaded patch site not found')
 if (!raw.includes(PROFILES_FROM)) throw new Error('profiles patch site not found')
 
 let pass = 0, fail = 0
@@ -63,6 +71,9 @@ async function paintWith(loadState, profiles) {
   fs.writeFileSync(path.join(dir, 'plugin.js'), raw
     .replace(OPEN_FROM, OPEN_TO)
     .replace(LOAD_FROM, `const [loadState, setLoadState] = useState('${loadState}')`)
+    // F-9b: every fixture here models a fetch that has SETTLED (the phase reads
+    // `loaded`); the never-settled popover is f9b-probe's subject, not this one.
+    .replace(LOADED_FROM, 'const [loaded, setLoaded] = useState(true)')
     .replace(PROFILES_FROM, `const [profiles, setProfiles] = useState(${JSON.stringify(profiles)})`))
 
   const injected = new Map()

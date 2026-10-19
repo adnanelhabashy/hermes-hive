@@ -1704,3 +1704,13 @@ score 91/100   ->  PASS  (bar 90)
   ]
 }
 ```
+
+## P1.5 F-9b — add-agent CTAs, suite re-run (FORGE)
+
+F-9b changes no pixels: the popover's loading/empty/error branches and their copy are unchanged, so the
+91/100 visual score above still stands. What changed is reachability and test coverage — `test.cjs`
+312/312, `smoke-render.mjs` 85/85, `f9-probe.mjs` 13/13, `f9b-probe.mjs` 24/24 at `7d6d704`, with
+`f9b-probe.mjs` red (8/24) against `6dc8c89` as the differential control. Two committed probes were
+stale against the new contract and are updated: `f9-probe.mjs` (its settled fixtures now force `loaded`,
+or "idle with rows" renders as loading by design) and `f9b-probe.mjs` (it now mounts an actually empty
+room and clicks inside `act()`). Screen-level captures were not re-shot this round — SENTRY owns them.
