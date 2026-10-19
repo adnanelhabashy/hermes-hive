@@ -2049,6 +2049,12 @@ const HIVE_TS_CSS = `.ts-workspace{
   /* semantic states, theme-aware by construction (P-16) */
   --ts-ok:var(--ui-green);--ts-bad:var(--ui-red);
   --ts-warn:#b1730f;--ts-info:#1f5fd0;--ts-idle:var(--ui-text-tertiary);
+  /* P1.5 F-7: micro-meta the user must READ — work-item meta incl. its duration
+     ("0s"), strip meta, empty-state hints, the mention picker's model — is
+     pinned to the --ui-text-tertiary token. --ui-text-quaternary is 36% of the
+     base colour against tertiary's 54%, so it stays decoration only, never a
+     reading level. --ts-idle remains the semantic idle-state tone (status text),
+     which is why those meta rules name the tertiary token directly instead. */
   position:relative;display:grid;grid-template-columns:var(--ts-team-w) minmax(420px,1fr) var(--ts-right-w);grid-template-rows:var(--ts-toolbar-h) minmax(0,1fr) auto;height:100%;min-height:0;min-width:0;overflow:hidden;background:var(--ui-surface-background);color:var(--ui-text-primary)}
 .dark .ts-workspace{--ts-warn:#e0a94c;--ts-info:#7aa2ff}
 /* CJK: the Latin 13px body is below the CJK floor of 14px, so body copy steps up
@@ -2093,7 +2099,7 @@ const HIVE_TS_CSS = `.ts-workspace{
 @media (min-width:1200px){
 .ts-col-right .ts-row-name,.ts-sheet[data-side="right"] .ts-row-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal}
 }
-.ts-row-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ts-idle)}
+.ts-row-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ui-text-tertiary)}
 .ts-chip{display:inline-flex;align-items:center;height:14px;padding:0 var(--ts-s1);border-radius:var(--ts-r-pill);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ts-warn);background:color-mix(in srgb, var(--ts-warn) 10%, transparent);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
 .ts-chip:hover{background:color-mix(in srgb, var(--ts-warn) 22%, transparent)}
 .ts-avatar{display:inline-flex;width:24px;height:24px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--ts-r);font-size:var(--ts-f-sm);font-weight:600;line-height:1}
@@ -2108,7 +2114,7 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-empty-title{font-size:var(--ts-f-display);line-height:var(--ts-lh-display);font-weight:600;color:var(--ui-text-primary)}
 .ts-empty-head{font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);font-weight:600;color:var(--ui-text-primary)}
 .ts-empty-body{font-size:var(--ts-f-body);line-height:var(--ts-lh-body);color:var(--ui-text-secondary)}
-.ts-empty-hint{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ts-idle)}
+.ts-empty-hint{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ui-text-tertiary)}
 .ts-tab-empty{display:flex;flex-direction:column;gap:var(--ts-s2);align-items:flex-start;padding:var(--ts-s3);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-tertiary)}
 .ts-skel{height:32px;border-radius:var(--ts-r);background:color-mix(in srgb, var(--ui-bg-tertiary) 40%, transparent)}
 .ts-sheet{display:none;position:absolute;top:var(--ts-toolbar-h);bottom:0;z-index:30;width:min(320px,80vw);overflow:auto;background:var(--ui-bg-elevated);border:1px solid var(--ui-stroke-secondary)}
@@ -2126,7 +2132,7 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-mention-row{display:flex;align-items:center;gap:var(--ts-s2);width:100%;padding:var(--ts-s1) var(--ts-s2);border-left:2px solid transparent;border-radius:var(--ts-r);background:transparent;color:var(--ui-text-primary);font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);font-weight:600;text-align:left;cursor:pointer;transition:background var(--ts-dur) var(--ts-ease)}
 .ts-mention-row:hover{background:var(--ui-row-hover-background)}
 .ts-mention-row[data-active="true"]{background:var(--ui-bg-tertiary);box-shadow:inset 2px 0 0 var(--ts-accent)}
-.ts-mention-model{margin-left:auto;font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);font-weight:400;color:var(--ts-idle)}
+.ts-mention-model{margin-left:auto;font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);font-weight:400;color:var(--ui-text-tertiary)}
 /* one elevation rule, floating surfaces only (P-14) */
 .ts-sheet,.ts-addpop,.ts-mention{box-shadow:0 8px 24px -12px rgba(0,0,0,.45)}
 :root:not(.dark) .ts-sheet,:root:not(.dark) .ts-addpop,:root:not(.dark) .ts-mention{box-shadow:0 8px 24px -12px rgba(24,20,40,.14)}
@@ -2806,7 +2812,9 @@ function HiveComposer() {
         onKeyDown: onKeyDown
       }),
       jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
-        jsx('span', { className: 'text-muted-foreground', style: HIVE_T.xs, children: 'Enter ↵ send · Shift+↵ newline · @ tag · ↑↓ pick' }),
+        // P1.5 F-7: this hint is read, so it is tertiary rather than the app's
+        // muted alias (same value today, one indirection fewer).
+        jsx('span', { className: 'shrink-0', style: { ...HIVE_T.xs, color: 'var(--ui-text-tertiary)' }, children: 'Enter ↵ send · Shift+↵ newline · @ tag · ↑↓ pick' }),
         jsxs('div', { className: 'flex items-center gap-1.5', children: [
           // Stop the member that is actually mid-turn (§3.3) — the verified
           // session.interrupt path, aimed at the selected member when there is
