@@ -115,7 +115,9 @@ const STATES = {
     { click: '[data-ts-team] .ts-row[data-agent="arch"] .ts-row-pin' }] },
   'motion-before': { blob: blob(), drive: [], hold: 0, post: 60 },
   'motion-during': { blob: blob(), drive: [{ hover: '[data-ts-team] .ts-row[data-agent="arch"]' }], hold: 0, post: 70 },
-  'motion-after': { blob: blob(), drive: [{ hover: '[data-ts-team] .ts-row[data-agent="arch"]' }], hold: 0, post: 420 }
+  'motion-after': { blob: blob(), drive: [{ hover: '[data-ts-team] .ts-row[data-agent="arch"]' }], hold: 0, post: 420 },
+  /* instrument self-check: what the /api/profiles bridge actually answers */
+  apiprobe: { blob: blob(), drive: [{ probeApi: '/api/profiles' }], hold: 0, post: 200 }
 }
 
 const CAPS = [
@@ -145,7 +147,8 @@ const CAPS = [
   { w: 1512, theme: 'dark', state: 'roster-pin', appW: 1456 },
   { w: 1512, theme: 'dark', state: 'motion-before', appW: 1456 },
   { w: 1512, theme: 'dark', state: 'motion-during', appW: 1456 },
-  { w: 1512, theme: 'dark', state: 'motion-after', appW: 1456 }
+  { w: 1512, theme: 'dark', state: 'motion-after', appW: 1456 },
+  { w: 1512, theme: 'dark', state: 'apiprobe', appW: 1456 }
 ]
 
 /* ── the measurement probe (runs in the page) ─────────────────────────────── */
@@ -278,6 +281,15 @@ const MEASURE = `(() => {
                ease: c.transitionTimingFunction, props: c.transitionProperty,
                rowHovered: (el.closest('.ts-row')||el).getAttribute('data-hovered') } })(),
     addpopText: addpop ? (addpop.innerText || '').replace(/\\n{2,}/g, '\\n').slice(0, 500) : '',
+    commits: (window.__HIVE_COMMITS__ || []).slice(-8),
+    setTrace: (window.__HIVE_SET_TRACE__ || []).slice(-14),
+    bridge: { present: !!window.hermesDesktop, apiType: typeof (window.hermesDesktop || {}).api,
+              calls: (window.__HIVE_API_CALLS__ || []).slice(0, 6), probe: window.__HIVE_PROBE__ || null,
+              now: Math.round(performance.now()),
+              seededProfiles: (() => { const h = globalThis.__HIVE_HARNESS__ || {}
+                const pl = (h.host || {})['profiles.list']
+                return { hostKeys: Object.keys(h.host || {}), apiKeys: Object.keys(h.api || {}),
+                         profiles: pl && pl.profiles ? pl.profiles.map((p) => p.name) : null } })() },
     rosterNames: [...document.querySelectorAll('.ts-team-body .ts-row-name')].map((el) => (el.textContent||'').trim()).slice(0, 12),
     flatShareTeam: flatShare('.ts-col-team'), flatShareRight: flatShare('.ts-col-right'),
     inReview: inReview ? { color: getComputedStyle(inReview).color, tag: inReview.tagName, cls: String(inReview.className).slice(0,40) } : null,
@@ -352,6 +364,7 @@ function serve () {
 <body><div id="surface"></div>
 <script>window.__HIVE_HARNESS__ = ${JSON.stringify(cfg)};
 window.__HIVE_ERRORS__ = [];
+window.__HIVE_SET_TRACE__ = [];
 window.addEventListener('error', (e) => window.__HIVE_ERRORS__.push(String(e.message).slice(0,140)));
 window.addEventListener('unhandledrejection', (e) => window.__HIVE_ERRORS__.push('rejection: ' + String(e.reason && e.reason.message || e.reason).slice(0,140)));
 </script>
@@ -367,6 +380,12 @@ window.addEventListener('unhandledrejection', (e) => window.__HIVE_ERRORS__.push
 
 const DRIVE = {
   click: (sel) => `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'missing:' + ${JSON.stringify(sel)}; el.click(); return 'clicked' })()`,
+  /* diagnostic: call the desktop bridge double the way the plugin does and
+     stash the settled answer on the page, so a capture can report what the
+     plugin actually received rather than what the seed intended. */
+  probeApi: (p) => `(() => { window.__HIVE_PROBE__ = 'pending'; const r = window.hermesDesktop && window.hermesDesktop.api({ path: ${JSON.stringify(p)} });
+     Promise.resolve(r).then((v) => { window.__HIVE_PROBE__ = 'ok ' + JSON.stringify(v).slice(0, 400) },
+       (e) => { window.__HIVE_PROBE__ = 'err ' + (e && e.message) }); return 'probed' })()`,
   hover: (sel) => `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'missing'
      el.setAttribute('data-hovered','true'); el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}))
      el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true})); return 'hovered' })()`,

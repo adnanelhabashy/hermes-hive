@@ -50,6 +50,7 @@ let cur = null             // frame of the component currently rendering
 let rootCounter = 0
 let pending = false
 let effects = []           // queued after-commit effects
+// instIds removed (was a bug-hunt counter)
 let container = null
 let rootVNode = null
 
@@ -66,6 +67,9 @@ function frameFor(kind) {
   const inst = store.get(path) || { hooks: [], effects: [] }
   store.set(path, inst)
   const frame = { path, n: 0, h: 0, inst, kind, parent }
+  if (globalThis.__HIVE_FRAME_TRACE__ && /HiveAddMember|HiveRenderOptions|HiveTeamRow/.test(kind)) {
+    globalThis.__HIVE_FRAME_TRACE__.push(kind + '@' + path)
+  }
   cur = frame
   return frame
 }
@@ -85,6 +89,10 @@ export function useState(init) {
     const next = typeof nv === 'function' ? nv(s.v.v) : nv
     if (Object.is(next, s.v.v)) return
     s.v.v = next
+    if (globalThis.__HIVE_SET_TRACE__) {
+      globalThis.__HIVE_SET_TRACE__.push(s.f.path + '#' + s.i + ' t=' + Math.round(performance.now()) +
+        ' v=' + JSON.stringify(next).slice(0, 60))
+    }
     schedule()
   }
   return [s.v.v, set]
@@ -191,6 +199,10 @@ function errorNode(where, err) {
 
 function renderComponent(Comp, props) {
   const frame = frameFor(Comp.name || 'anon')
+  if (globalThis.__HIVE_FRAME_TRACE__ && Comp.name === 'HiveRenderOptions') {
+    globalThis.__HIVE_FRAME_TRACE__.push('   opts=' + (props && props.opts ? props.opts.length : 'n/a') +
+      ' pinned=' + JSON.stringify(props && props.pinnedProfile))
+  }
   let out
   try { out = Comp(props || {}) } catch (e) { out = errorNode(Comp, e) }
   cur = frame.parent
@@ -233,25 +245,34 @@ export function mount(el, vnode) {
 }
 
 function commit(first) {
-  const saved = cur
   cur = null
   rootCounter = 0
+  globalThis.__HIVE_FRAME_TRACE__ = []
+  globalThis.__HIVE_COMMIT_SEQ__ = (globalThis.__HIVE_COMMIT_SEQ__ || 0) + 1
   const tree = renderNode(rootVNode)
-  cur = saved
-  if (first) {
-    container.textContent = ''
-    if (tree) container.appendChild(tree)
-  } else {
-    // full re-render: keep the container, swap the subtree (deterministic, and
-    // every capture is taken on a settled frame)
-    container.textContent = ''
-    const fresh = renderNode(rootVNode)
-    if (fresh) container.appendChild(fresh)
-    globalThis.__HIVE_RENDER__.rerenders++
-  }
+  /* ONE render per commit, then swap. Rendering a second tree for the non-first
+     commit (what this harness did through the P1.5 round) starts from a stale
+     cursor and a non-zero root counter, so every component walks a different
+     frame path in the second pass than in the first; the mounted tree then reads
+     virgin hook slots, and any state a handler set becomes invisible in the very
+     frame that is captured. Measured, not guessed: pass1 rendered
+     HiveAddMember@R50 with opts=5 while pass2 mounted HiveAddMember@R175 with
+     opts=0, so the seeded /api/profiles double looked like a missing seed. */
+  container.textContent = ''
+  if (tree) container.appendChild(tree)
+  if (!first) globalThis.__HIVE_RENDER__.rerenders++
   const queued = effects
   effects = []
   for (const f of queued) { try { f() } catch (e) { console.warn('effect', e) } }
+  /* instrument trace: what each commit actually painted. Kept because a capture
+     that cannot see the commit cannot tell a slow seed from a lost state slot. */
+  const trace = (globalThis.__HIVE_COMMITS__ = globalThis.__HIVE_COMMITS__ || [])
+  const pop = container.querySelector('.ts-addpop')
+  trace.push({ t: Math.round(performance.now()), first: !!first, rerenders: globalThis.__HIVE_RENDER__ ? globalThis.__HIVE_RENDER__.rerenders : 0,
+    addpopRows: container.querySelectorAll('.ts-addpop-row').length,
+    frames: (globalThis.__HIVE_FRAME_TRACE__ || []).slice(0, 14),
+    addpopText: pop ? (pop.innerText || '').replace(/\s+/g, ' ').slice(0, 90) : null })
+  if (trace.length > 60) trace.splice(0, trace.length - 60)
 }
 
 /* ── SDK double ──────────────────────────────────────────────────────────── */
@@ -441,14 +462,21 @@ if (!globalThis.hermesDesktop) {
     api (opts = {}) {
       const path = String(opts.path || '')
       const method = String(opts.method || 'GET').toUpperCase()
-      apiCalls.push({ path, method, body: opts.body })
+      const call = { path, method, body: opts.body, t: Math.round(performance.now()) }
+      apiCalls.push(call)
       if (method !== 'GET') return Promise.resolve({ ok: true, path, method })
       const seeded = (H().api || {})[path]
       const answer = seeded !== undefined
         ? seeded
         : (path === '/api/profiles' ? (H().host || {})['profiles.list'] : undefined)
-      if (answer === undefined) return Promise.reject(new Error('no double for ' + path))
-      return Promise.resolve(JSON.parse(JSON.stringify(answer)))
+      if (answer === undefined) {
+        call.settled = 'rejected: no double for ' + path
+        return Promise.reject(new Error('no double for ' + path))
+      }
+      const out = JSON.parse(JSON.stringify(answer))
+      call.settledAt = Math.round(performance.now())
+      call.names = (out.profiles || []).map((p) => p.name)
+      return Promise.resolve(out)
     }
   }
 }
