@@ -80,7 +80,7 @@ function makeSandbox(label) {
  * `/api/profiles` is served by a deferred the probe resolves by hand, so the
  * in-flight (loading) commit is observable instead of assumed.
  */
-async function mount(label) {
+async function mount(label, opts = {}) {
   const { dir, nm } = makeSandbox(label)
   const harness = await import(pathToFileURL(path.join(dir, 'harness.mjs')).href)
   const { JSDOM, act, createRoot } = harness
@@ -115,7 +115,14 @@ async function mount(label) {
   globalThis.__HIVE_HOST__ = {
     notify: () => {}, notifyError: () => {}, navigate: () => {}, revealPane: () => {},
     request: async (method) => {
-      if (method === 'session.create') return { session_id: 'live-1', stored_session_id: 'stored-1' }
+      // `failMint` is how the probe reaches a genuinely EMPTY room: on a normal
+      // boot the plugin mints @default and appends "@default joined the room", so
+      // TsRoomEmpty never renders. A failed session.create leaves members [] and
+      // timeline [] — the real state in which the UI says "This room is empty".
+      if (method === 'session.create') {
+        if (opts.failMint) throw new Error('session.create failed (probe: the room never starts)')
+        return { session_id: 'live-1', stored_session_id: 'stored-1' }
+      }
       if (method === 'projects.list') return { projects: [] }
       return {}
     },
@@ -156,12 +163,37 @@ async function mount(label) {
   }
   const settle = async (profiles) => {
     const res = inflight.shift()
-    if (!res) throw new Error('no in-flight /api/profiles request to settle')
+    // Returns false instead of throwing when nothing was in flight: on the
+    // PRE-FIX plugin the CTA never starts a fetch, and the probe should report
+    // that as the named check failing, not die before the later sections run.
+    if (!res) return false
     await act(async () => { res({ profiles }); await new Promise((r) => setImmediate(r)) })
+    return true
+  }
+  /**
+   * Click the CTA inside the empty state carrying `marker`, INSIDE act(), so the
+   * open transition and the effect it drives commit before the caller asserts.
+   * (Clicking outside act() left the assertion one commit behind the click: the
+   * popover had not opened yet and the fetch had not started, which read as a
+   * failure of the fix when it was a failure of the probe's timing.)
+   */
+  const clickInEmpty = async (marker, selector = '.ts-linkcard') => {
+    let hit = false
+    await act(async () => {
+      const block = [...dom.window.document.querySelectorAll('.ts-empty')]
+        .find((d) => (d.textContent || '').includes(marker))
+      const el = block && block.querySelector(selector)
+      if (el) {
+        el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }))
+        hit = true
+      }
+      await new Promise((r) => setImmediate(r))
+    })
+    return hit
   }
   const flush = async () => { await act(async () => { await new Promise((r) => setImmediate(r)) }) }
   const close = async () => { await act(async () => { root.unmount() }); fs.rmSync(dir, { recursive: true, force: true }) }
-  return { dom, container, html, requests, profileCalls, click, settle, flush, close, React, act }
+  return { dom, container, html, requests, profileCalls, click, clickInEmpty, settle, flush, close, React, act }
 }
 
 // ── §A  the CTA sites are atom-only, and the fetch is open-driven ───────────
@@ -180,10 +212,10 @@ ok('load() is no longer called from the dock button handler (only the open effec
 // ── §B  the empty-room CTA: real click, real fetch, real copy ───────────────
 console.log('')
 console.log('F-9b §B — "This room is empty" → "+ Add an agent" (TsRoomEmpty)')
-const room = await mount('room')
+const room = await mount('room', { failMint: true })
 ok('the empty room teaches the CTA', room.html().includes('This room is empty'), {})
 ok('no /api/profiles request before the CTA is used', room.profileCalls() === 0, { calls: room.profileCalls() })
-const roomClicked = room.click('.ts-empty .ts-linkcard')
+const roomClicked = await room.clickInEmpty('This room is empty')
 ok('the CTA click is dispatched', roomClicked, {})
 ok('the popover opens', room.html().includes('ts-addpop'), {})
 ok('the CTA path STARTS the profile fetch (hiveFetchProfiles invoked)', room.profileCalls() >= 1,
@@ -194,27 +226,21 @@ ok('while the fetch is in flight the popover paints "Loading profiles…"',
   { loading: room.html().includes(LOADING_COPY), marked: room.html().includes('data-ts-addpop-loading') })
 ok('the CTA path NEVER paints "Every profile is already in the room."',
   !room.html().includes(EMPTY_COPY), { emptyCopy: room.html().includes(EMPTY_COPY) })
-await room.settle([{ name: 'default', model: 'x' }, { name: 'scout', model: 'y' }])
-ok('once the fetch settles the rows are painted', room.html().includes('@scout') && room.html().includes('ts-addpop-row'),
-  { rows: room.html().includes('ts-addpop-row') })
+const roomSettled = await room.settle([{ name: 'default', model: 'x' }, { name: 'scout', model: 'y' }])
+ok('once the fetch settles the rows are painted',
+  roomSettled && room.html().includes('@scout') && room.html().includes('ts-addpop-row'),
+  { settled: roomSettled, rows: room.html().includes('ts-addpop-row') })
 ok('the settled popover paints no loading copy', !room.html().includes(LOADING_COPY), {})
 await room.close()
 
 // ── §C  the Board empty-state CTA: the same defect, its own button ──────────
 console.log('')
 console.log('F-9b §C — Board empty state "No work items yet" → "+ Add an agent"')
-const board = await mount('board')
+const board = await mount('board', { failMint: true })
 ok('the empty Board teaches its own CTA', board.html().includes('No work items yet'), {})
 const boardCta = board.dom.window.document.querySelectorAll('.ts-empty .ts-linkcard')
 ok('the Board CTA is a distinct button from the room CTA', boardCta.length === 2, { ctas: boardCta.length })
-const boardClicked = await board.act(async () => {
-  const btns = [...board.dom.window.document.querySelectorAll('.ts-empty')]
-    .find((d) => d.textContent.includes('No work items yet'))
-    ?.querySelectorAll('.ts-linkcard') || []
-  if (!btns.length) return false
-  btns[0].dispatchEvent(new board.dom.window.MouseEvent('click', { bubbles: true, cancelable: true }))
-  return true
-})
+const boardClicked = await board.clickInEmpty('No work items yet')
 ok('the Board CTA click is dispatched', boardClicked === true, {})
 await board.flush()
 ok('the Board CTA path STARTS the profile fetch (hiveFetchProfiles invoked)', board.profileCalls() >= 1,
@@ -229,8 +255,8 @@ await board.close()
 // ── §D  the copy is still reachable when it is TRUE ────────────────────────
 console.log('')
 console.log('F-9b §D — a genuinely all-present list still paints the empty copy')
-const allPresent = await mount('allpresent')
-allPresent.click('.ts-empty .ts-linkcard')
+const allPresent = await mount('allpresent', { failMint: true })
+await allPresent.clickInEmpty('This room is empty')
 await allPresent.flush()
 await allPresent.settle([{ name: 'you', model: 'x' }])   // 'you' is always in the room
 ok('an all-present list still says "Every profile is already in the room."',
