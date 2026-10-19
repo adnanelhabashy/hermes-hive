@@ -1015,3 +1015,14 @@ renders and the room CTA was previously untestable. Both probes were corrected t
 contract (`loadState` + `loaded`), not weakened: `f9-probe.mjs`'s settled fixtures now set `loaded`, and
 `f9b-probe.mjs` clicks inside `act()` so the assertion is not one commit behind the click. No CSS
 touched, so the 1000px layout probe is a regression check only.
+
+## F-10 — one leader per room, crowned (FORGE)
+
+Both write paths (row toggle, add-as-leader mint) run pure `hiveApplyLeader`: pinning sets the target and
+clears the rest in the same update. The leader row gets an inline-SVG crown before the name (`aria-label`
+"Team lead", `var(--ts-warn)`) replacing the "Pinned" chip; the toggle's on-label becomes "Unpin".
+```
+$ node test.cjs -> ALL PASS 336/336  |  node smoke-render.mjs -> ALL PASS 86/86
+$ node f10-probe.mjs (real DOM) -> ALL PASS 27/27  |  --plugin 200fc14 (pre-fix) -> FAIL 17/27
+$ bash sync-dev.sh -> synced buzz-hive-dev/plugin.js, no residual identities
+```
