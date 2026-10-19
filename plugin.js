@@ -2131,6 +2131,7 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-empty-hint{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ui-text-tertiary)}
 .ts-tab-empty{display:flex;flex-direction:column;gap:var(--ts-s2);align-items:flex-start;padding:var(--ts-s3);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-tertiary)}
 .ts-skel{height:32px;border-radius:var(--ts-r);background:color-mix(in srgb, var(--ui-bg-tertiary) 40%, transparent)}
+.ts-skel-row{height:22px}
 .ts-sheet{display:none;position:absolute;top:var(--ts-toolbar-h);bottom:0;z-index:30;width:min(320px,80vw);overflow:auto;background:var(--ui-bg-elevated);border:1px solid var(--ui-stroke-secondary)}
 .ts-sheet[data-side="team"]{left:0}
 .ts-sheet[data-side="right"]{right:0}
@@ -2994,7 +2995,17 @@ function HiveAddMember() {
         ? jsx(HiveCreateForm, { onDone: (name, contextMode) => { setCreating(false); close(); setQ(''); void hiveMintMember(name, { contextMode }); void hiveFetchProfiles().then(setProfiles) }, onCancel: () => setCreating(false) })
         : jsxs('div', { className: 'flex flex-col gap-1.5', children: [
             jsx(Input, { autoFocus: true, placeholder: 'Search profiles…', value: q, onChange: (e) => setQ(e.target.value), className: 'ts-addpop-search text-xs' }),
-            loadState === 'error'
+            // P1.5 F-9: `loading` is its own branch. Without it the fetch
+            // window fell through to the empty-list branch and told the user
+            // "Every profile is already in the room" before any profile had
+            // arrived. Static skeletons, no shimmer — Phase 9 owns motion.
+            loadState === 'loading'
+              ? jsxs('div', { className: 'flex flex-col gap-1 p-1', 'data-ts-addpop-loading': true, 'aria-busy': 'true', role: 'status', children: [
+                  jsx('span', { className: 'text-muted-foreground', style: HIVE_T.sm, children: 'Loading profiles…' }),
+                  jsx('div', { className: 'ts-skel ts-skel-row' }),
+                  jsx('div', { className: 'ts-skel ts-skel-row' })
+                ] })
+              : loadState === 'error'
               ? jsx('div', { className: 'flex items-center justify-between p-1', children: [jsx('span', { className: 'text-muted-foreground', style: HIVE_T.sm, children: 'Couldn’t load profiles.' }), jsx(Button, { variant: 'ghost', size: 'sm', onClick: () => { load(); $tsAddOpen.set(true) }, children: 'Retry' })] })
               : jsx(HiveRenderOptions, { opts, onPick: pick, onNew: () => setCreating(true), pinnedProfile: pinned, onTogglePin: (name) => setPinned(pinned === name ? null : name) })
           ] })
