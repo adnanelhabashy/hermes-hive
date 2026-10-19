@@ -1228,13 +1228,48 @@ function hiveOrderMembers(members) {
  *  target only — which clears all, since exclusivity guarantees nobody else was
  *  on. Pure, and the input array is never mutated. */
 function hiveApplyLeader(members, profile, next) {
+  const list = Array.isArray(members) ? members : []
   const key = hiveNormalize(profile)
   const on = next === true
-  return (Array.isArray(members) ? members : []).map((m) => {
+  // A pin aimed at a name the room does not hold is a NO-OP. Without this the
+  // "on" branch would unset every non-match — a typo or a race (the member left
+  // between the click and the write) would leave the room leaderless instead of
+  // simply not pinning anyone.
+  if (!key || !list.some((m) => m && typeof m === 'object' && hiveNormalize(m.profile) === key)) return list
+  return list.map((m) => {
     if (!m || typeof m !== 'object') return m
     if (hiveNormalize(m.profile) === key) return { ...m, leader: on }
     return on && m.leader === true ? { ...m, leader: false } : m
   })
+}
+
+/** Repair a roster on the way in from storage (F-10). Before the pin was
+ *  exclusive, pinning A then B persisted `leader: true` on BOTH, so a room
+ *  saved by the buggy build still holds several leads after the upgrade — and
+ *  hydrating it verbatim would paint two crowns and two top rows, the exact
+ *  symptom this card removes. Collapse to one: the survivor is the lead the
+ *  roster would already have shown first (lowest `order`, array position as the
+ *  fallback — the same key hiveOrderMembers ranks by), and the rest are cleared
+ *  through hiveApplyLeader, so live pinning and boot repair cannot drift.
+ *  Pure, and the input array is never mutated. */
+function hiveCollapseLeaders(members) {
+  const list = Array.isArray(members) ? members : []
+  const leads = []
+  list.forEach((m, i) => {
+    if (m && typeof m === 'object' && m.leader === true) leads.push({ m, i })
+  })
+  if (leads.length < 2) return list
+  const rank = (x) => {
+    const raw = Number(x.m.order)
+    return Number.isFinite(raw) ? raw : x.i
+  }
+  leads.sort((a, b) => (rank(a) - rank(b)) || String(a.m.profile || '').localeCompare(String(b.m.profile || '')))
+  const keep = leads[0].i
+  const key = hiveNormalize(list[keep].profile)
+  if (key) return hiveApplyLeader(list, key, true)
+  // A saved lead with no usable profile cannot be addressed by name; keep it by
+  // position rather than drop the only lead the room has.
+  return list.map((m, i) => (i !== keep && m && typeof m === 'object' && m.leader === true ? { ...m, leader: false } : m))
 }
 
 /** The leader's identity mark (F-10). The row needs two things from the flag —
@@ -2045,7 +2080,9 @@ async function hiveBootHydrate() {
     }
     hydrated.push(live)
   }
-  $hiveMembers.set(hydrated)
+  // F-10: a room saved before the pin was exclusive can carry several leads;
+  // collapse them to one here, so boot cannot re-paint the bug the pin fixed.
+  $hiveMembers.set(hiveCollapseLeaders(hydrated))
   // Write the normalized v2 shape even when the source was legacy v1.
   hivePersist()
 }

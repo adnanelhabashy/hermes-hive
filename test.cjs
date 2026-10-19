@@ -20,7 +20,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 // inside the CORE markers, so nothing here re-declares (and silently drifts
 // from) a real plugin value.
 const factory = new Function(
-  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas,  hiveCardTitle, hiveOrderMembers, hiveApplyLeader, hiveLeaderBadge, hiveRosterSummary, hiveRoomStatus, hiveWorkSummary, hiveOpenItemCount, hiveLastActivityTs, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
+  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas,  hiveCardTitle, hiveOrderMembers, hiveApplyLeader, hiveCollapseLeaders, hiveLeaderBadge, hiveRosterSummary, hiveRoomStatus, hiveWorkSummary, hiveOpenItemCount, hiveLastActivityTs, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
 )
 const {
   hiveParseCoordination,
@@ -87,6 +87,7 @@ const {
   hiveCardTitle,
   hiveOrderMembers,
   hiveApplyLeader,
+  hiveCollapseLeaders,
   hiveLeaderBadge,
   hiveRosterSummary,
   hiveRoomStatus,
@@ -152,6 +153,10 @@ console.log('desktop surface contract')
   // The mint path runs the same exclusive rule as the row toggle (F-10).
   assert('add-as-leader clears the previous leader in the same write',
     src.includes('$hiveMembers.set(options.leader === true ? hiveApplyLeader(minted, key, true) : minted)'))
+  // A room persisted by the pre-fix build can hold several leads; boot must
+  // collapse them, or the upgrade re-paints the bug on the reporter's own room.
+  assert('hydrating a saved room collapses it to one leader',
+    src.includes('$hiveMembers.set(hiveCollapseLeaders(hydrated))'))
 }
 
 console.log('hiveParseCoordination')
@@ -875,6 +880,58 @@ console.log('hiveApplyLeader (F-10: the room has exactly one team leader)')
     afterMint.filter((m) => m.leader === true).map((m) => m.profile), ['sentry'])
   deep('and the minted leader sorts first too',
     hiveOrderMembers(afterMint).map((m) => m.profile), ['sentry', 'you', 'atlas', 'forge'])
+
+  // A pin that names nobody must not wipe the room: the "on" branch unsets every
+  // non-match, so an unknown name (a typo, or a member that left between the
+  // click and the write) would otherwise clear the only leader standing.
+  deep('pinning a name the room does not hold leaves the leader alone',
+    hiveApplyLeader(room, 'ghost', true).filter((m) => m.leader === true).map((m) => m.profile), ['atlas'])
+  deep('pinning nothing at all is a no-op too',
+    hiveApplyLeader(room, '', true).filter((m) => m.leader === true).map((m) => m.profile), ['atlas'])
+  deep('and a no-op write still keeps every member',
+    hiveApplyLeader(room, 'ghost', true).length, room.length)
+}
+
+console.log('hiveCollapseLeaders (F-10: a room saved before the pin was exclusive)')
+{
+  // The pre-fix build persisted `leader: true` on EVERY member the user pinned,
+  // so the reporter's own room hydrates with two leads and two crowns. Boot
+  // keeps the lead the roster already showed first (lowest `order`) and clears
+  // the rest, so the upgrade cannot re-paint the bug on an existing room.
+  const legacy = [
+    { profile: 'scout', order: 2 },
+    { profile: 'atlas', order: 0, leader: true },
+    { profile: 'forge', order: 1, leader: true }
+  ]
+  const collapsed = hiveCollapseLeaders(legacy)
+  deep('a two-leader room hydrates with exactly one leader',
+    collapsed.filter((m) => m.leader === true).map((m) => m.profile), ['atlas'])
+  deep('the lower `order` wins, not the array position',
+    collapsed.find((m) => m.profile === 'forge').leader, false)
+  deep('nobody is dropped by the repair', collapsed.length, 3)
+  deep('and the repair leaves the roster in the order the lead implies',
+    hiveOrderMembers(collapsed).map((m) => m.profile), ['atlas', 'forge', 'scout'])
+
+  deep('a missing `order` falls back to array position, as the sort key does',
+    hiveCollapseLeaders([{ profile: 'a', leader: true }, { profile: 'b', leader: true }])
+      .filter((m) => m.leader === true).map((m) => m.profile), ['a'])
+  deep('equal orders fall back to the profile name (deterministic boot)',
+    hiveCollapseLeaders([{ profile: 'zed', order: 1, leader: true }, { profile: 'aaa', order: 1, leader: true }])
+      .filter((m) => m.leader === true).map((m) => m.profile), ['aaa'])
+
+  const one = [{ profile: 'a', order: 0, leader: true }, { profile: 'b', order: 1 }]
+  assert('a room that already has one leader is passed straight through', hiveCollapseLeaders(one) === one)
+  deep('a room with no leader stays leaderless',
+    hiveCollapseLeaders([{ profile: 'a' }, { profile: 'b' }]).filter((m) => m.leader === true), [])
+  deep('the input array and its members are never mutated',
+    [legacy[0].leader === true, legacy[1].leader, legacy[2].leader], [false, true, true])
+  deep('an empty roster is fine', hiveCollapseLeaders([]), [])
+  deep('a malformed entry cannot throw',
+    hiveCollapseLeaders([null, { profile: 'x', leader: true }, undefined, { profile: 'y', leader: true }])
+      .filter((m) => m && m.leader === true).map((m) => m.profile), ['x'])
+  deep('a saved lead with no profile survives by position; the rest still clear',
+    hiveCollapseLeaders([{ order: 0, leader: true }, { profile: 'b', order: 1, leader: true }])
+      .filter((m) => m && m.leader === true).length, 1)
 }
 
 console.log('hiveLeaderBadge (F-10: the crown mark)')

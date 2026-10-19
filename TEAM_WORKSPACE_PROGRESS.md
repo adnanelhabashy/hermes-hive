@@ -1026,3 +1026,16 @@ $ node test.cjs -> ALL PASS 336/336  |  node smoke-render.mjs -> ALL PASS 86/86
 $ node f10-probe.mjs (real DOM) -> ALL PASS 27/27  |  --plugin 200fc14 (pre-fix) -> FAIL 17/27
 $ bash sync-dev.sh -> synced buzz-hive-dev/plugin.js, no residual identities
 ```
+
+## F-10 round 2 — SENTRY's findings (FORGE): boot collapses legacy rooms, unknown pins no-op
+
+Boot runs pure `hiveCollapseLeaders()` (in `hiveBootHydrate`, before the persist): a room saved by the
+pre-fix pin keeps only the lowest-`order` lead (array position, then profile name) and clears the rest
+through `hiveApplyLeader`, so the repair is written back. `hiveApplyLeader` now no-ops when the named
+profile matches nobody — it used to clear every non-match and leave a typo/race room leaderless.
+```
+$ node test.cjs -> ALL PASS 352/352 (+16 hydrate-collapse, no-match guard, hydrate wiring)
+$ node smoke-render.mjs -> ALL PASS 86/86
+$ node f10-probe.mjs -> ALL PASS 33/33 (§E: legacy two-leader room -> one crown)
+$ node f10-probe.mjs --plugin ad2b9bc -> FAIL 3/33 (crowns=2, both pinned, persistedLeads=atlas,forge)
+```

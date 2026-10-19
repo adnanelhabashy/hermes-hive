@@ -260,6 +260,36 @@ ok('the previous leader is cleared by the mint itself',
 ok('the new leader sorts first', mint.memberOrder()[0] === 'scout', { order: mint.memberOrder() })
 await mint.close()
 
+// ── §E  a room saved by the pre-fix build (two leads) hydrates with ONE crown
+console.log('')
+console.log('F-10 §E — a legacy room holding two pinned members collapses on boot')
+// The old pin toggled only its target, so pinning A then B wrote `leader: true`
+// on both. That is the reporter's own on-disk state after the upgrade, and boot
+// must repair it rather than paint two crowns over the bug this card removes.
+const legacySeed = [[
+  'hive.v2',
+  {
+    members: [
+      { profile: 'atlas', order: 0, leader: true, storedId: null },
+      { profile: 'forge', order: 1, leader: true, storedId: null },
+      { profile: 'scout', order: 2, leader: false, storedId: null }
+    ],
+    timeline: []
+  }
+]]
+const legacy = await mount('legacy', { seed: legacySeed })
+ok('the legacy room hydrates with every member', legacy.memberOrder().length === 3, { order: legacy.memberOrder() })
+ok('exactly ONE crown survives the hydrate', legacy.crowns().length === 1, { crowns: legacy.crowns().length })
+ok('the crown belongs to the lowest-`order` lead', !!legacy.crownIn('atlas'), { order: legacy.memberOrder() })
+ok('the other pinned member is unpinned by the hydrate',
+  !legacy.crownIn('forge') && legacy.pinState('forge').on === 'false', { forge: legacy.pinState('forge') })
+ok('the roster reads one lead, then stable order', legacy.memberOrder().join() === 'atlas,forge,scout',
+  { order: legacy.memberOrder() })
+const persisted = legacy.storage.get('hive.v2')
+const persistedLeads = ((persisted && persisted.members) || []).filter((m) => m && m.leader === true).map((m) => m.profile)
+ok('the repair is WRITTEN BACK, not just held in memory', persistedLeads.join() === 'atlas', { persistedLeads })
+await legacy.close()
+
 console.log('')
 console.log(fail ? `FAIL ${fail}/${pass + fail}` : `ALL PASS ${pass}/${pass + fail}`)
 process.exit(fail ? 1 : 0)
