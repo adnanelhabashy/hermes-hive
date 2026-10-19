@@ -176,7 +176,7 @@ const MEASURE = `(() => {
   const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;left:-9999px;top:0'
   document.body.appendChild(probe)
   for (const t of ['--ui-accent','--ui-bg-primary','--ui-bg-secondary','--ui-bg-elevated','--ui-text-primary',
-                   '--ui-text-secondary','--ui-text-quaternary','--ui-stroke-secondary','--ui-yellow','--ui-red',
+                   '--ui-text-secondary','--ui-text-tertiary','--ui-text-quaternary','--ui-stroke-secondary','--ui-yellow','--ui-red',
                    '--ui-green','--ts-warn','--ts-info','--ts-ok','--ts-bad','--ts-idle','--ts-elev','--ts-hairline','--dt-muted-foreground']) {
     probe.style.color = 'var(' + t + ', rgb(1,2,3))'
     tokens[t] = getComputedStyle(probe).color

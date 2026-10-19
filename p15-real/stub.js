@@ -284,11 +284,27 @@ export function cn(...a) {
   return a.flat(Infinity).filter((x) => typeof x === 'string' && x).join(' ')
 }
 export function haptic() {}
-export function profileColor(p) { return ACCENTS[hash(p) % ACCENTS.length] }
-export function profileColorSoft(p) { return profileColor(p) }
-const ACCENTS = ['hsl(208 72% 56%)', 'hsl(265 60% 55%)', 'hsl(150 55% 42%)', 'hsl(20 65% 52%)',
-  'hsl(330 65% 52%)', 'hsl(45 70% 45%)', 'hsl(180 55% 42%)', 'hsl(280 50% 55%)', 'hsl(95 45% 40%)', 'hsl(0 60% 52%)']
-function hash(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) | 0; return Math.abs(h) }
+/* Profile colours: the shipped SDK's own maths, ported verbatim from
+   /Applications/Hermes.app/.../dist/assets/profile-color-TXT65diY.js —
+   hash = h*31+c>>>0, hue = hash % 360 at `hsl(h 68% 58%)`, `default` (and the
+   empty string) resolve to NO colour, and the soft variant is a 16% tint
+   (`color-mix(in srgb, <c> 16%, transparent)`), not the solid colour. The
+   previous double returned the solid colour for `soft`, which painted every
+   message panel as a saturated block and made a colour-discipline deduction out
+   of the instrument. `hiveAccent()` falls back to HIVE_DEFAULT_ACCENT when this
+   returns null, so the port is safe by the plugin's own code. */
+export const PROFILE_PALETTE = Array.from({ length: 12 }, (_, i) => `hsl(${i * 30} 68% 58%)`)
+export function profileColor(p) {
+  const n = String(p === null || p === undefined ? '' : p).trim()
+  if (!n || n === 'default') return null
+  let h = 0
+  for (let i = 0; i < n.length; i += 1) h = (h * 31 + n.charCodeAt(i)) >>> 0
+  return `hsl(${h % 360} 68% 58%)`
+}
+export function profileColorSoft(p, amount = 16) {
+  const c = profileColor(p)
+  return c ? `color-mix(in srgb, ${c} ${amount}%, transparent)` : null
+}
 
 /* icons.* is a component factory: <Icon size={14} className="mr-1"/> */
 const glyph = (name) => ({ size = 14, className = '', ...rest } = {}) =>
