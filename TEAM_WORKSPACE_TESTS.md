@@ -1537,3 +1537,170 @@ native panes unaffected  Unchanged by construction: the implementation diff touc
 Suite re-run at `00934f2` (SENTRY): `test.cjs` 312/312, `smoke-render.mjs` 85/85,
 `css-layout-probe.cjs --widths=1512,1456,1200,1000,700,600,500` -> `ALL PASS — every reachability
 expectation holds across 1512/1456/1200/1000/700/600/500 px`.
+
+---
+
+## P1.5 visual QA — round 2 (SENTRY, card `t_6072fce0`) at HEAD `f4771f1`
+
+Re-verification of the eight REVISE items in §E plus the three owed-evidence gaps named in §F.
+The round did not begin with the suites: it began with the instrument, because two of the
+"missing" results turned out to be produced by the harness rather than the product.
+
+### A2. Three instrument defects found and fixed before scoring
+
+All three live in `p15-real/` (the real-DOM driver), none in `plugin.js`. Each was fixed, and
+each fix was verified by a control at the same revision.
+
+1. **The harness rendered every commit twice, and the second pass read virgin hook slots.**
+   `commit()` built `tree`, then for a re-render started a *second* pass after restoring a stale
+   `cur` with `rootCounter` already advanced — so components walked different frame paths in the
+   two passes. Measured on the add-agent popover: pass 1 rendered `HiveAddMember@R50` with
+   `opts=5` while pass 2 mounted `HiveAddMember@R175` with `opts=0`. Any state a click handler set
+   was therefore invisible in the frame that got captured: the popover reported "Every profile is
+   already in the room." with five profiles seeded, and P-22/P-19 had no evidence at all.
+   Control: the pre-fix harness at `f4771f1` still renders 0 rows with the `/api/profiles` double
+   in place; the fixed harness renders 5. `commit()` now renders once and swaps that tree.
+2. **`window.hermesDesktop.api` had no double.** The plugin reads the profile list from
+   `api({path:'/api/profiles'})` (`hiveFetchProfiles`), which the host double never answered, while
+   every other host surface was seeded. `stub.js` now serves it from `H.__HIVE_HARNESS__.api[path]`,
+   falling back to the host double's `profiles.list` answer; reads are cloned, writes are recorded
+   and answered, never performed. The capture carries a self-check (`apiprobe`) that prints what the
+   bridge actually answered.
+3. **`profileColorSoft` was the solid colour, not the host's tint.** The shipped SDK
+   (`/Applications/Hermes.app/…/dist/assets/profile-color-TXT65diY.js`) is
+   `color-mix(in srgb, <colour> 16%, transparent)`, with `default` resolving to *no* colour and the
+   hue from `hash = h*31+c>>>0 % 360`. The double returned the saturated colour, which painted every
+   message panel as a solid block — the evidence §E used to deduct colour discipline. The host's
+   maths is now ported verbatim into `stub.js`, and that deduction is withdrawn (see §F2).
+
+### B2. Suites at `f4771f1`
+
+```
+node test.cjs                                                        ALL PASS 312/312
+node smoke-render.mjs                                                ALL PASS  85/85
+node css-layout-probe.cjs --widths=1512,1456,1200,1000,700,600,500   ALL PASS — every
+   reachability expectation holds across 1512/1456/1200/1000/700/600/500 px
+```
+
+Capture set: 28 captures (`r2-*`) in `~/Developer/hive-team-studio/sentry-probe/p15-captures-r2/`,
+every one `ready=true`, `errors=[]`, from the same driver as the round-1 set.
+
+### C2. F-1 … F-8, each against the field it was measured on
+
+| item | round-1 measurement | round-2 measurement | state |
+|---|---|---|---|
+| **F-1** addpop inside its column | `addpopInsideColumn` `right 212 / colRight 208 → inside:false` | `right 200 / colRight 208 → inside:true` in `r2-1512-addpop-dark`, `-nopin`, `-pin` and `r2-1280-light-addpop-light` | closed |
+| **F-2** collapsed-width overhang | 1000px `.ts-col-team` scrollW/clientW `104/55`, `.ts-dock` `104/55`; 700px `104/47`; census 1000 = 5 hits, 700 = 2 | 1000px `55/55` and `55/55`; 700px `47/47`; census 1000 = 3 hits, 700 = 0 — and every remaining hit is `text-overflow: ellipsis` on a fixed-width row, i.e. the intended device, listed separately in `truncated[]` | closed |
+| **F-3** one-line work-item titles | `truncated[]` holds both right-panel titles at 1512, 1456, 1200 and 1000 | 1512 and 1456: **0** titles truncated; 1200: 1 (only the strip meta); the agent-detail state drops from 3 row-name truncations to 1. At 1000 the two titles stay one-line — that is the collapsed rail, as the item specified | closed |
+| **F-4** toolbar title at 700px | census 700 = 2 hits | census 700 = 0; the title (`toolbarControls[0]`, "hive") measures scrollWidth/clientWidth `30/30`, so the box no longer under-runs its text | closed |
+| **F-5** Approvals copy | capture text: `server verbatim`, `mirrors the queue` present | capture text: `Approvals are answered in the app’s own prompt.` present; neither architecture phrase survives anywhere in the rendered text | closed |
+| **F-6** two "No project" labels | toolbar chip rendered a placeholder plus a second label | workspace `innerText` contains `No project` exactly **once**; the chip is one node (`toolbarControls[1]`, 92px) whose content is plugin-owned (`SelectValue` receives `children`, plugin.js:3369). Caveat: the harness's `SelectValue` double renders `children` directly, so it cannot reproduce Radix's item-text portal — the source argument carries the no-duplicate claim, the capture confirms the single label | closed |
+| **F-7** micro-meta at tertiary | right-panel `0s`, strip meta and composer hint sat at the quaternary token | measured tokens: tertiary `rgb(141,136,153)` dark / `rgb(107,104,117)` light; quaternary `rgb(109,104,121)` / `rgb(140,137,149)`. `.ts-row-meta` and `.ts-strip-label` compute to **tertiary** in both themes; `.ts-strip-meta`, `.ts-empty-hint`, `.ts-rail-title`, `.ts-mention-model` and `.ts-addpop-pin` are pinned to it in CSS and the composer hint is inline tertiary (plugin.js:2831). The only quaternary left is the system-avatar colour (plugin.js:2548) — decoration, as the item asked | closed |
+| **F-8** pin from the roster row | no roster control; the only pin affordance was inside the popover | `r2-1512-roster-pin-dark`: clicking the row pin on `@arch` sets arch `data-on="true" aria-pressed="true"` with the `Pinned` chip, the roster reorders to `you · @arch · @forge · @default`, and the pre-existing pin on `@forge` keeps its state | closed |
+
+### D2. Owed evidence closed, and one new item found while closing it
+
+* **P-22 per-row pin toggle (was: no evidence).** With the bridge double seeded, `/api/profiles`
+  returns five profiles outside the room (`toddy, writer, atlas, reviewer, scout`) and the popover
+  renders five `.ts-addpop-row`s. After clicking the first row's own toggle
+  (`r2-1512-addpop-pin-dark`): row 1 `data-pin="true"`, `.ts-addpop-pin` `data-on="true"`,
+  `aria-pressed="true"`, label `Pinned`, colour `rgb(224,169,76)` (the amber `--ts-warn`); rows 2–5
+  `data-pin="false"`, `aria-pressed="false"`, tertiary. `r2-1512-addpop-nopin-dark` shows all five
+  false. The toggle is functional and reads out its state three ways.
+* **P-19 motion (was: n/a, no capture recorded a transition).** One transition, measured three ways:
+  the roster pin reveal. Before (no pointer) `opacity 0` → during (81 ms after the real pointer
+  move) `0.952516` → after `1`, against the declared `--ts-dur:160ms` `cubic-bezier(.2,.8,.2,1)`.
+  The in-page ramp is `(0 ms, 0) (43, 0) (64, 0.912) (117, 0.989) (153, 0.9996) (181, 1)`; a
+  cubic-bezier(.2,.8,.2,1) at those progress points predicts exactly that front-loading, so the
+  declared curve is the curve that runs. Motion is now scored instead of n/a.
+* **New — F-9, found by the commit trace (non-blocking).** The add-agent popover has no loading
+  state: `loadState === 'loading'` falls through to the same branch as a truly empty profile list,
+  so for the duration of the fetch the user is told **"Every profile is already in the room."**
+  Evidence: the commit trace painted that line at `t=497` while the state trace records
+  `R50#2 = "loading"` (the profiles arrive at `t=498`). On a slow host this is the first thing the
+  user reads. Suggested fix: give `loading` its own branch (`Loading profiles…` or a skeleton row).
+
+### E2. Not verified this round
+
+```
+A4 Stop against a live session   Still NOT CLOSED. Needs the running desktop gateway (port +
+                                 token) with a member mid-turn; the harness stubs the host, so a
+                                 Stop click here would prove nothing. The card instructs not to
+                                 fight the user for the window.
+disable -> re-enable toggle      Still NOT CLOSED. A GUI action in the user's own app.
+light theme, all states          NOT CLOSED. The light set is 2 of the 20 states (full + addpop);
+                                 the other 18 are dark-only, so "no dark patch survives" is
+                                 verified for the two captured states, not for the surface.
+agent-detail overhang            Pre-existing, not a REVISE regression: in the expanded agent-detail
+                                 state the card overhangs its box (ts-card 211 vs 205, the inner
+                                 strip-meta line 199 vs 181) and the team column's scroll container
+                                 reports 5px of horizontal overflow. Control: plugin 00934f2 at the
+                                 current harness shows the same chain (11 hits, the same 5
+                                 containers), so the REVISE round neither caused nor fixed it.
+Round-1 colour deduction         WITHDRAWN. It rested on the double's solid profile colour, not on
+                                 the host's 16% tint (§A2.3).
+```
+
+### F2. Scored round
+
+Rubric axes (the card's nine, then the added polish axes), each read off the round-2 capture set.
+The roll-up is the axis mean ×10, rounded — no separate weighting.
+
+```
+hierarchy                       9/10   feed is unambiguously primary at every width; the right
+                                      panel still carries five tab stops, a rail and workflow cards
+density                         9/10   roster and feed comfortable; the 700px toolbar packs ten
+                                      controls into 644px
+spacing rhythm                 10/10   measured gap census 8/6/4/2px, paddings all on the 4px
+                                      scale, nothing arbitrary to name
+alignment                       9/10   column seams and card left-edges hold at
+                                      1512/1456/1200/1000/700; residual: the expanded
+                                      agent-detail card overhangs its box by 4–16px (§E2)
+type scale                      9/10   plugin-owned text is 10/11/12/14/15 plus a 0.9em inline-code
+                                      step inside 14px body; the ad-hoc 10.4px step is gone. The
+                                      14px body against the 15px title is a narrow separation
+color discipline                9/10   one accent, hairline cards, theme-aware amber (IN REVIEW
+                                      #e0a94c dark / #b1730f light). Round 1's deduction — solid
+                                      profile colours filling whole panels — is withdrawn: it was
+                                      the double's colour, not the host's 16% tint (§A2.3)
+top-5 daily actions             9/10   send / add-agent / agent-detail / tabs fine, and pin is now
+                                      on the roster row (F-8); tab groups remain three strips
+dark+light integrity            9/10   tokens, borders, shadows and the amber state flip; no dark
+                                      patch survives on the light captures. Coverage is 2 of 20
+                                      states, so this is a statement about those two
+responsive (each captured width) 9/10  every numbered width is clean of non-ellipsis overhangs
+                                      (F-2, F-4); 1000px roster collapses to avatars; sheets
+                                      render their bodies at 1000. Residual: agent-detail state
+typography craft                9/10   weights 400/500/600, -apple-system 77 : JetBrains Mono 3
+                                      split correct, CJK 14px/22.75px, no clipping
+spacing rhythm consistency     10/10   same census as above, both themes; nothing to name
+motion discipline               9/10   one shared token does all of it: --ts-dur 160ms and
+                                      cubic-bezier(.2,.8,.2,1) on every interactive surface, no
+                                      ad-hoc durations, and the measured ramp matches the declared
+                                      curve (§D2). Structural opens (sheet, popover) are instant
+                                      cuts, and the pin reveal is 0.91 done at 74ms
+empty/loading/error craft       8/10   the empty room, the approvals empty and the tab states are
+                                      designed, not bare strings — but the add-agent popover has
+                                      no loading state and reads as "empty" while it fetches (F-9)
+focus/hover/active states       9/10   composer focus ring solid 2px, roster hover = row-hover
+                                      token, toolbar-chip hover rule present, the quiet pin is
+                                      reachable by focus-visible and always shown on (hover:none)
+agent identity design           9/10   deterministic accent + dot + model meta on one line, and
+                                      the pin now carries its state where the member is shown
+
+score 91/100   ->  PASS  (bar 90)
+```
+
+```json
+{
+  "score": 91,
+  "verdict": "PASS",
+  "differences": [
+    { "difference": "F-9 (new, non-blocking): the add-agent popover has no loading state, so while /api/profiles is in flight it renders the empty-room copy 'Every profile is already in the room.' The commit trace painted that line at t=497 while the state trace shows loadState='loading' (profiles arrive at t=498).", "suggestion": "Give 'loading' its own branch next to the 'error' branch in HiveAddMember (a skeleton row or 'Loading profiles…')." },
+    { "difference": "Pre-existing, not a regression: in the expanded agent-detail state the card overhangs its box (.ts-card scrollWidth 211 vs clientWidth 205, the inner strip-meta line 199 vs 181) and the team column's scroll container reports 5px of horizontal overflow at 1512. Control at plugin 00934f2 shows the same five containers.", "suggestion": "Put min-w-0 + truncate on the '#b7c210 OPEN · reviewing …' meta line inside the expanded card; re-run the census in that state until it reads zero." },
+    { "difference": "Motion covers property changes only: the sheet and popover of the largest layout change appear as instant cuts, and the pin reveal's easing is 91% complete at 74ms of its 160ms.", "suggestion": "Leave as a deliberate desktop idiom, or give the two structural opens a short (<=120ms) opacity/translate step using the same --ts-dur/--ts-ease tokens." },
+    { "difference": "The right panel still asks the user to parse five tab stops (Tasks, Activity, Files, Approvals, Workflow) plus a persistent rail and workflow cards against a feed that is meant to be primary.", "suggestion": "Consider folding Approvals/Workflow behind the same strip or deferring them to the workflow phase, so the right panel has one reading order." },
+    { "difference": "Only 2 of the 20 capture states exist in the light theme, so light-theme integrity is verified for the full and addpop states only.", "suggestion": "Add light captures for the tab, empty and sheet states in the next visual round." }
+  ]
+}
+```
