@@ -20,7 +20,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 // inside the CORE markers, so nothing here re-declares (and silently drifts
 // from) a real plugin value.
 const factory = new Function(
-  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas,  hiveCardTitle, hiveOrderMembers, hiveRosterSummary, hiveRoomStatus, hiveWorkSummary, hiveOpenItemCount, hiveLastActivityTs, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
+  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas,  hiveCardTitle, hiveOrderMembers, hiveApplyLeader, hiveLeaderBadge, hiveRosterSummary, hiveRoomStatus, hiveWorkSummary, hiveOpenItemCount, hiveLastActivityTs, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
 )
 const {
   hiveParseCoordination,
@@ -86,6 +86,8 @@ const {
   hiveBatchDeltas,
   hiveCardTitle,
   hiveOrderMembers,
+  hiveApplyLeader,
+  hiveLeaderBadge,
   hiveRosterSummary,
   hiveRoomStatus,
   hiveWorkSummary,
@@ -134,6 +136,22 @@ console.log('desktop surface contract')
   assert('Every member exposes the context mode control', src.includes('data-hive-context-mode') && src.includes('Standard') && src.includes('Minimal'))
   assert('New profile form defaults to Minimal', src.includes("useState('minimal')") && src.includes('New clones default to Minimal.'))
   assert('Delivery uses the context envelope policy', src.includes('hiveBuildContextEnvelope({') && src.includes('mode: member.contextMode'))
+  // F-10: the leader reads at a glance. The crown is inline SVG (never an emoji
+  // glyph, which brings its own colour and its own font), it is wired to the
+  // pure badge descriptor, and it is named for assistive tech.
+  const crownSrc = src.slice(src.indexOf('function TsLeadCrown'), src.indexOf('function TsAgentRow'))
+  assert('the leader row renders the crown from the badge descriptor',
+    src.includes('lead ? jsx(TsLeadCrown, {}) : null') && src.includes('const lead = hiveLeaderBadge(m)'))
+  assert('the crown is an inline SVG and carries no emoji',
+    !!crownSrc && crownSrc.includes("jsxs('svg'") && crownSrc.includes("jsx('path'")
+      && !/\p{Extended_Pictographic}/u.test(crownSrc))
+  assert('the crown is labelled "Team lead" for assistive tech',
+    src.includes("'aria-label': 'Team lead'") && src.includes("jsx('title', { children: 'Team lead' })"))
+  assert('the crown takes its colour from the theme amber ramp, never a literal',
+    src.includes('.ts-lead-crown{flex:0 0 auto;display:block;color:var(--ts-warn)}'))
+  // The mint path runs the same exclusive rule as the row toggle (F-10).
+  assert('add-as-leader clears the previous leader in the same write',
+    src.includes('$hiveMembers.set(options.leader === true ? hiveApplyLeader(minted, key, true) : minted)'))
 }
 
 console.log('hiveParseCoordination')
@@ -810,6 +828,67 @@ console.log('hiveOrderMembers (team panel order)')
     hiveOrderMembers([{ profile: 'zed' }, { profile: 'aaa' }]).map((m) => m.profile), ['zed', 'aaa'])
   deep('pinning the second member is enough to reorder',
     hiveOrderMembers([{ profile: 'zed' }, { profile: 'aaa', leader: true }]).map((m) => m.profile), ['aaa', 'zed'])
+}
+
+console.log('hiveApplyLeader (F-10: the room has exactly one team leader)')
+{
+  // The pin used to toggle only the target, so every member could be pinned at
+  // once and the leader-first sort key was ambiguous. The room now has ONE
+  // leader: pinning B unpins A in the same update.
+  const you = { profile: 'you', order: 0 }
+
+  // `you` is not a member: the team panel renders it as its own fixed first row
+  // (data-role="you") and only the members go through hiveOrderMembers. So the
+  // roster the user sees is `you` followed by the ordered members.
+  const roster = (list) => ['you', ...hiveOrderMembers(list).map((m) => m.profile)]
+  const members = [{ profile: 'atlas', order: 1, leader: true }, { profile: 'forge', order: 2 }]
+  const room = [you, ...members]
+
+  const pinB = hiveApplyLeader(room, 'forge', true)
+  deep('pinning B leaves exactly one leader', pinB.filter((m) => m.leader === true).map((m) => m.profile), ['forge'])
+  deep('the previous leader A is unpinned, not dropped', pinB.find((m) => m.profile === 'atlas'), { profile: 'atlas', order: 1, leader: false })
+  deep('the roster reads you · B · …', roster(pinB.filter((m) => m.profile !== 'you')), ['you', 'forge', 'atlas'])
+
+  const unpinB = hiveApplyLeader(pinB, 'forge', false)
+  deep('unpinning B leaves the room with no leader', unpinB.filter((m) => m.leader === true), [])
+  deep('unpinning B restores insertion order', roster(unpinB.filter((m) => m.profile !== 'you')), ['you', 'atlas', 'forge'])
+
+  // "Always false" would pass the two cases above, so prove the flag actually
+  // lands on the target: pinning A back re-pins A and clears nothing else.
+  deep('pinning A after B clears B (the rule is not one-way)',
+    hiveApplyLeader(pinB, 'atlas', true).filter((m) => m.leader === true).map((m) => m.profile), ['atlas'])
+
+  deep('a profile name is matched case-insensitively',
+    hiveApplyLeader(room, 'FORGE', true).filter((m) => m.leader === true).map((m) => m.profile), ['forge'])
+  deep('the input array and its members are never mutated',
+    [room[1].leader, room[2].leader === true], [true, false])
+  deep('an empty roster is fine', hiveApplyLeader([], 'forge', true), [])
+  deep('a malformed entry cannot throw', hiveApplyLeader([null, { profile: 'x' }], 'x', true).length, 2)
+  deep('a member already off stays off', hiveApplyLeader(room, 'forge', false).filter((m) => m.leader === true).map((m) => m.profile), ['atlas'])
+
+  // Mint-as-leader: the Add-agent popover can pin the new member as it lands.
+  // Same rule, one write — the new member is appended first, then the exclusive
+  // pin runs, so the room never shows two leaders behind the popover.
+  const minted = [...room, { profile: 'sentry', order: 3, leader: true }]
+  const afterMint = hiveApplyLeader(minted, 'sentry', true)
+  deep('a member minted as leader clears the previous leader',
+    afterMint.filter((m) => m.leader === true).map((m) => m.profile), ['sentry'])
+  deep('and the minted leader sorts first too',
+    hiveOrderMembers(afterMint).map((m) => m.profile), ['sentry', 'you', 'atlas', 'forge'])
+}
+
+console.log('hiveLeaderBadge (F-10: the crown mark)')
+{
+  // The row renders a crown before the name from this descriptor — non-null means
+  // "crown", null means "no crown" — so the badge is assertable without a DOM.
+  deep('a leader carries the crown descriptor',
+    hiveLeaderBadge({ profile: 'forge', leader: true }), { label: 'Team lead', title: 'Team lead' })
+  deep('a member who was never pinned gets no crown', hiveLeaderBadge({ profile: 'atlas' }), null)
+  deep('a member unpinned by B loses its crown', hiveLeaderBadge({ profile: 'atlas', leader: false }), null)
+  deep('the crown disappears once B is unpinned too',
+    hiveLeaderBadge(hiveApplyLeader([{ profile: 'b', leader: true }], 'b', false)[0]), null)
+  deep('a malformed member cannot throw', hiveLeaderBadge(null), null)
+  deep('a non-boolean flag is not a crown', hiveLeaderBadge({ profile: 'a', leader: 'yes' }), null)
 }
 
 console.log('turn-closing safety (R1: a buffered delta must not resurrect a closed turn)')

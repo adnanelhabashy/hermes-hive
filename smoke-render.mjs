@@ -262,6 +262,10 @@ async function inSandbox() {
   const unknown = vars.filter((v) => !UI_VARS.has(v) && !v.startsWith('--ts-'))
   ok('every custom property it reads is a real app var or its own --ts-* prop', unknown.length === 0, unknown)
   ok('at least one real theme var is used', vars.some((v) => UI_VARS.has(v)))
+  // F-10: the leader's crown takes the theme's amber, so leadership is the same
+  // signal in both themes and the markup ships no colour of its own.
+  ok('the leader crown styles itself from the theme amber ramp',
+    /\.ts-lead-crown\{[^}]*color:var\(--ts-warn\)/.test(cssText))
   ok('no selector leaks globally (all under .ts-*)',
     !/(^|})\s*(body|html|\*|:root)\s*[,{]/.test(cssText))
   ok('the narrow-window breakpoints exist',

@@ -1237,6 +1237,16 @@ function hiveApplyLeader(members, profile, next) {
   })
 }
 
+/** The leader's identity mark (F-10). The row needs two things from the flag —
+ *  whether this member is the lead, and the words that name the lead — and both
+ *  are decided here so they can be asserted without a DOM. A non-leader and a
+ *  malformed entry get `null`: the row then renders no crown at all, rather than
+ *  a crown with an empty label. */
+function hiveLeaderBadge(member) {
+  if (!member || typeof member !== 'object' || member.leader !== true) return null
+  return { label: 'Team lead', title: 'Team lead' }
+}
+
 /** Team-strip summary (P-02): an honest count, never the internal `N/11` cap. */
 function hiveRosterSummary(count, working) {
   const n = Number(count) || 0
@@ -2122,8 +2132,11 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-col-right .ts-row-name,.ts-sheet[data-side="right"] .ts-row-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal}
 }
 .ts-row-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ui-text-tertiary)}
-.ts-chip{display:inline-flex;align-items:center;height:14px;padding:0 var(--ts-s1);border-radius:var(--ts-r-pill);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ts-warn);background:color-mix(in srgb, var(--ts-warn) 10%, transparent);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
-.ts-chip:hover{background:color-mix(in srgb, var(--ts-warn) 22%, transparent)}
+/* F-10: the leader's crown. Colour comes from the theme's amber ramp, which the
+   .ts-workspace block already re-declares per theme — so leadership is the
+   same signal in light and dark, and the markup carries no colour at all.
+   display:block keeps the 11 px svg off the text baseline inside the flex row. */
+.ts-lead-crown{flex:0 0 auto;display:block;color:var(--ts-warn)}
 /* P1.5 F-8: the pin is a control on the roster row, not a read-only badge. The
    roster is where a PINNED member is shown, so the roster is where it can be
    unpinned — the toggle reuses the Add-agent popover's row-toggle anatomy
@@ -3710,13 +3723,34 @@ function TsAgentDetail({ m, status, turn }) {
   })
 }
 
+/** F-10: the leader's crown, inline SVG. Not an emoji: the mark has to take the
+ *  theme's amber (`.ts-lead-crown` → `--ts-warn`) and stay crisp on both themes,
+ *  which a glyph inherited from the font cannot promise. 11 px keeps it inside
+ *  the 40 px row's name line without adding height, and `currentColor` means the
+ *  colour lives in CSS, not in the markup. */
+function TsLeadCrown() {
+  return jsxs('svg', {
+    className: 'ts-lead-crown', width: 11, height: 11, viewBox: '0 0 16 16',
+    role: 'img', 'aria-label': 'Team lead', focusable: 'false',
+    children: [
+      jsx('title', { children: 'Team lead' }),
+      jsx('path', { d: 'M1.5 4.4l3.6 2.9L8 2.8l2.9 4.5 3.6-2.9L13 12H3L1.5 4.4z', fill: 'currentColor' }),
+      jsx('path', { d: 'M3 12.9h10v1.1H3z', fill: 'currentColor' })
+    ]
+  })
+}
+
 function TsAgentRow({ m, status, turn, open }) {
   const selected = useValue($tsAgentSelected)
   const timeline = useValue($hiveTimeline)
   const isSelected = hiveNormalize(selected || '') === hiveNormalize(m.profile)
-  // Name line: dot · @profile · pin chip · browser glyph · busy glyph.
+  // F-10: one descriptor decides both halves of the leader mark — whether the
+  // row is the lead, and the words that name it ("Team lead", never a bare flag).
+  const lead = hiveLeaderBadge(m)
+  // Name line: dot · crown (leader only) · @profile · pin control · browser glyph
+  // · busy glyph.
   // Meta line: model · last activity · duration — no role mojibake, and the
-  // leader flag is visible as a chip instead of a word buried in the meta line.
+  // leader flag is visible as a crown instead of a word buried in the meta line.
   // P-03: model · last activity · duration — the row's own history, not just
   // the turn that happens to be live.
   const last = hiveLastProfileEntry(timeline, m.profile)
@@ -3740,21 +3774,32 @@ function TsAgentRow({ m, status, turn, open }) {
       jsxs('span', { className: 'ts-team-body flex min-w-0 flex-1 flex-col gap-0.5', children: [
         jsxs('span', { className: 'flex min-w-0 items-center gap-1.5', children: [
           jsx(TsStatusDot, { status }),
+          // F-10: the crown is the LEAD's mark, so it sits where the name is read
+          // — before it — and it is decoration for the row's state, not a control:
+          // clicking it still selects the member like the rest of the row.
+          lead ? jsx(TsLeadCrown, {}) : null,
           jsx('span', { className: 'ts-row-name truncate', children: '@' + m.profile }),
           // P1.5 F-8: pin/unpin from the row that shows the state. Same anatomy
           // as the Add-agent popover's row toggle (ts-addpop-pin): data-on
-          // carries the state, aria-pressed names it, the PINNED chip is its
-          // on-label. It lives on the NAME line, where the read-only chip used to
-          // sit, so the meta line below keeps its full width. The click stops
-          // here — the row's own click selects and expands the member.
+          // carries the state, aria-pressed names it. It lives on the NAME line,
+          // where the read-only chip used to sit, so the meta line below keeps
+          // its full width. The click stops here — the row's own click selects
+          // and expands the member.
+          // F-10: the ON label is the ACTION ("Unpin"), not a second state word.
+          // The crown already says "this is the lead" in the theme's amber; a
+          // "Pinned" chip beside it said the same thing twice and cost ~40 px of
+          // a 240–280 px rail where the profile name is already truncated. State
+          // is carried by the crown + aria-pressed; the word is what the click
+          // does.
           jsx('button', {
             type: 'button', className: 'ts-row-pin', 'data-on': m.leader ? 'true' : 'false',
             'aria-pressed': m.leader ? 'true' : 'false',
+            'aria-label': m.leader ? `Unpin @${m.profile}` : `Pin @${m.profile} to the top of the roster`,
             title: m.leader
               ? `Unpin @${m.profile}`
               : `Pin @${m.profile} to the top of the roster. Coordination roles arrive in Phase 3.`,
             onClick: (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); hiveSetLeader(m.profile) },
-            children: m.leader ? jsx('span', { className: 'ts-chip', children: 'Pinned' }) : 'Pin'
+            children: m.leader ? 'Unpin' : 'Pin'
           }),
           m.browser ? jsx(icons.Globe, { size: 11, className: 'shrink-0 text-muted-foreground' }) : null,
           hiveStatusGlyph(status)
