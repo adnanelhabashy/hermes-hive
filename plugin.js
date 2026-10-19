@@ -2960,6 +2960,14 @@ function HiveAddMember() {
   // `+ Add an agent` action drive the same popover. Session-local only.
   const open = useValue($tsAddOpen)
   const [loadState, setLoadState] = useState('idle')
+  // P1.5 F-9b: `loadState === 'idle'` cannot tell "never asked" from "asked and
+  // nothing is left", and the popover has three entry points — the dock button
+  // and the two `+ Add an agent` CTAs (empty room, empty Board). Only the dock
+  // used to call `load()`, so the CTAs opened the popover in the never-asked
+  // state and it painted "Every profile is already in the room." in a room the
+  // same screen called empty. `loaded` records that a fetch has settled; the
+  // open state itself drives the fetch, so no entry point can skip it.
+  const [loaded, setLoaded] = useState(false)
   const [creating, setCreating] = useState(false)
   const [pinned, setPinned] = useState(null)
   const rootRef = useRef(null)
@@ -2978,8 +2986,24 @@ function HiveAddMember() {
     return () => { document.removeEventListener('mousedown', onDocMouse); document.removeEventListener('keydown', onKey) }
   }, [open])
 
-  const load = () => { setLoadState('loading'); void hiveFetchProfiles().then((p) => { setProfiles(p); setLoadState(p.length ? 'idle' : 'error') }) }
-  const toggle = () => { if (open) { close(); return } load(); setPinned(null); $tsAddOpen.set(true) }
+  const load = () => { setLoadState('loading'); void hiveFetchProfiles().then((p) => { setProfiles(p); setLoaded(true); setLoadState(p.length ? 'idle' : 'error') }) }
+  // P1.5 F-9b: the fetch follows the OPEN state, not the control that opened it.
+  // `toggle` used to be the only caller of `load()`, so the two `+ Add an agent`
+  // CTAs (TsRoomEmpty, the empty Board) opened a popover that had never asked
+  // for profiles. Keying the fetch on the open transition covers every entry
+  // point at once — and keeps the refresh-on-reopen the dock button always had.
+  const wasOpen = useRef(false)
+  useEffect(() => {
+    if (open && !wasOpen.current) load()
+    wasOpen.current = open
+  }, [open])
+  // The render reads a PHASE, not the raw fetch state: `idle` before the first
+  // fetch settles is "haven't asked yet", not "nothing left to add". Painting
+  // the empty copy in that window is exactly the CTA bug — and it is also the
+  // one commit between opening and the effect above firing. A never-fetched
+  // popover therefore renders as loading, which is true on that commit.
+  const phase = loadState === 'error' ? 'error' : (loaded ? loadState : 'loading')
+  const toggle = () => { if (open) { close(); return } setPinned(null); $tsAddOpen.set(true) }
   // The pin toggle on the row is what makes this a role decision, not a guess:
   // picking a pinned row mints the member already pinned (hiveMintMember reads
   // `options.leader`).
@@ -2999,7 +3023,10 @@ function HiveAddMember() {
             // window fell through to the empty-list branch and told the user
             // "Every profile is already in the room" before any profile had
             // arrived. Static skeletons, no shimmer — Phase 9 owns motion.
-            loadState === 'loading'
+            // P1.5 F-9b: the branch reads `phase`, so "no fetch has settled
+            // yet" counts as loading no matter which control opened the
+            // popover — the empty copy needs a settled, genuinely empty list.
+            phase === 'loading'
               ? jsxs('div', { className: 'flex flex-col gap-1 p-1', 'data-ts-addpop-loading': true, 'aria-busy': 'true', role: 'status', children: [
                   jsx('span', { className: 'text-muted-foreground', style: HIVE_T.sm, children: 'Loading profiles…' }),
                   jsx('div', { className: 'ts-skel ts-skel-row' }),
