@@ -427,6 +427,32 @@ export const host = {
   close() {}
 }
 
+/* window.hermesDesktop.api — the desktop REST bridge. The plugin reads the
+   profile list from it (`/api/profiles`, hiveFetchProfiles) and that surface was
+   the one gap in this double: the add-agent popover therefore rendered
+   'Every profile is already in the room.' with no candidate rows, so the P-22
+   per-row pin toggle had no evidence. Seeded from H().api[path]; the host
+   double's `profiles.list` answer is the fallback for /api/profiles so the two
+   seed styles stay interchangeable. Reads are cloned, writes are recorded and
+   answered, never performed. */
+const apiCalls = (globalThis.__HIVE_API_CALLS__ = globalThis.__HIVE_API_CALLS__ || [])
+if (!globalThis.hermesDesktop) {
+  globalThis.hermesDesktop = {
+    api (opts = {}) {
+      const path = String(opts.path || '')
+      const method = String(opts.method || 'GET').toUpperCase()
+      apiCalls.push({ path, method, body: opts.body })
+      if (method !== 'GET') return Promise.resolve({ ok: true, path, method })
+      const seeded = (H().api || {})[path]
+      const answer = seeded !== undefined
+        ? seeded
+        : (path === '/api/profiles' ? (H().host || {})['profiles.list'] : undefined)
+      if (answer === undefined) return Promise.reject(new Error('no double for ' + path))
+      return Promise.resolve(JSON.parse(JSON.stringify(answer)))
+    }
+  }
+}
+
 /* a default export keeps `import sdk from '@hermes/plugin-sdk'` shaped like the
    real module even though the plugin uses named imports */
 export default { atom, useValue, host, Button, Input, Textarea, ScrollArea, Badge, StatusDot, Switch,

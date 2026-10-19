@@ -98,7 +98,24 @@ const STATES = {
   'sheet-team': { blob: blob(), drive: [{ click: '[aria-label="Team panel"]' }] },
   'sheet-right': { blob: blob(), drive: [{ click: '[aria-label="Work panel"]' }] },
   'light-full': { blob: blob(), theme: 'light', drive: [] },
-  'light-addpop': { blob: blob(), theme: 'light', drive: [{ click: '[data-ts-team] button[aria-haspopup="dialog"]' }] }
+  'light-addpop': { blob: blob(), theme: 'light', drive: [{ click: '[data-ts-team] button[aria-haspopup="dialog"]' }] },
+  /* ── owed-evidence states (round 2) ──────────────────────────────────────
+     addpop-pin : profiles now come back through window.hermesDesktop.api, then
+                  the row's own pin toggle is clicked. Proves P-22/F-1 evidence.
+     roster-pin : F-8's pin/unpin from the row that shows the state.
+     motion-*   : P-19. One transition (the roster pin reveal, --ts-dur:160ms)
+                  read before / during / after. `hold` is the wait after each
+                  drive step, `post` the wait before the frame is measured. */
+  'addpop-pin': { blob: blob(), host: { 'profiles.list': { profiles: PROFILES } },
+    drive: [{ click: '[data-ts-team] button[aria-haspopup="dialog"]' }, { click: '.ts-addpop-row .ts-addpop-pin' }] },
+  'addpop-nopin': { blob: blob(), host: { 'profiles.list': { profiles: PROFILES } },
+    drive: [{ click: '[data-ts-team] button[aria-haspopup="dialog"]' }] },
+  'roster-pin': { blob: blob(), drive: [
+    { hover: '[data-ts-team] .ts-row[data-agent="arch"]' },
+    { click: '[data-ts-team] .ts-row[data-agent="arch"] .ts-row-pin' }] },
+  'motion-before': { blob: blob(), drive: [], hold: 0, post: 60 },
+  'motion-during': { blob: blob(), drive: [{ hover: '[data-ts-team] .ts-row[data-agent="arch"]' }], hold: 0, post: 70 },
+  'motion-after': { blob: blob(), drive: [{ hover: '[data-ts-team] .ts-row[data-agent="arch"]' }], hold: 0, post: 420 }
 }
 
 const CAPS = [
@@ -121,7 +138,14 @@ const CAPS = [
   { w: 1512, theme: 'dark', state: 'focus', appW: 1456 },
   { w: 1512, theme: 'dark', state: 'hover', appW: 1456 },
   { w: 1000, theme: 'dark', state: 'sheet-team', appW: 944 },
-  { w: 1000, theme: 'dark', state: 'sheet-right', appW: 944 }
+  { w: 1000, theme: 'dark', state: 'sheet-right', appW: 944 },
+  /* round 2: the owed-evidence captures */
+  { w: 1512, theme: 'dark', state: 'addpop-nopin', appW: 1456 },
+  { w: 1512, theme: 'dark', state: 'addpop-pin', appW: 1456 },
+  { w: 1512, theme: 'dark', state: 'roster-pin', appW: 1456 },
+  { w: 1512, theme: 'dark', state: 'motion-before', appW: 1456 },
+  { w: 1512, theme: 'dark', state: 'motion-during', appW: 1456 },
+  { w: 1512, theme: 'dark', state: 'motion-after', appW: 1456 }
 ]
 
 /* ── the measurement probe (runs in the page) ─────────────────────────────── */
@@ -229,6 +253,32 @@ const MEASURE = `(() => {
     addpopInsideColumn: addpop && teamCol ? { right: Math.round(addpop.getBoundingClientRect().right),
       colRight: Math.round(teamCol.getBoundingClientRect().right),
       inside: addpop.getBoundingClientRect().right <= teamCol.getBoundingClientRect().right + 0.5 } : null,
+    /* P-22 / F-1 owed evidence: the add-agent rows themselves and the state their
+       own pin toggle reports. Read from the live DOM, never inferred. */
+    addpopRows: [...document.querySelectorAll('.ts-addpop-row')].map((el) => {
+      const pin = el.querySelector('.ts-addpop-pin')
+      const c = pin ? getComputedStyle(pin) : null
+      return { text: (el.textContent||'').trim().slice(0,40), dataPin: el.getAttribute('data-pin'),
+        pinText: pin ? (pin.textContent||'').trim() : null, pinDataOn: pin ? pin.getAttribute('data-on') : null,
+        pinAriaPressed: pin ? pin.getAttribute('aria-pressed') : null, pinColor: c ? c.color : null } }),
+    /* F-8 owed evidence: the roster row's own pin toggle. */
+    rosterPins: [...document.querySelectorAll('.ts-row-pin')].map((el) => {
+      const c = getComputedStyle(el); const row = el.closest('.ts-row')
+      return { agent: row ? row.getAttribute('data-agent') : null, text: (el.textContent||'').trim(),
+        dataOn: el.getAttribute('data-on'), ariaPressed: el.getAttribute('aria-pressed'),
+        opacity: c.opacity, color: c.color, dur: c.transitionDuration + ' ' + c.transitionTimingFunction,
+        hovered: row ? row.getAttribute('data-hovered') : null } }),
+    /* P-19 owed evidence: the one live transition under measurement (the roster
+       pin reveal). opacity is read mid-flight, so the triple proves the motion
+       exists and is the declared duration, not a guess. */
+    motion: (() => { const el = document.querySelector('.ts-row[data-agent="arch"] .ts-row-pin')
+      if (!el) return null
+      const c = getComputedStyle(el)
+      return { sel: '.ts-row[data-agent=arch] .ts-row-pin', opacity: c.opacity, dur: c.transitionDuration,
+               ease: c.transitionTimingFunction, props: c.transitionProperty,
+               rowHovered: (el.closest('.ts-row')||el).getAttribute('data-hovered') } })(),
+    addpopText: addpop ? (addpop.innerText || '').replace(/\\n{2,}/g, '\\n').slice(0, 500) : '',
+    rosterNames: [...document.querySelectorAll('.ts-team-body .ts-row-name')].map((el) => (el.textContent||'').trim()).slice(0, 12),
     flatShareTeam: flatShare('.ts-col-team'), flatShareRight: flatShare('.ts-col-right'),
     inReview: inReview ? { color: getComputedStyle(inReview).color, tag: inReview.tagName, cls: String(inReview.className).slice(0,40) } : null,
     focus: active ? { tag: active.tagName, testid: active.getAttribute && active.getAttribute('data-testid'),
@@ -374,7 +424,8 @@ async function main () {
       ready = !!(r.result && r.result.value)
     }
     const driveLog = []
-    for (const step of ((STATES[cap.state] || STATES.full).drive || [])) {
+    const st = STATES[cap.state] || STATES.full
+    for (const step of (st.drive || [])) {
       const [op, param] = Object.entries(step)[0]
       const r = await cdp.send('Runtime.evaluate', { expression: DRIVE[op](param), returnByValue: true }, sessionId)
       driveLog.push(op + '(' + String(param).slice(0, 40) + ') -> ' + (r.result && r.result.value))
@@ -388,9 +439,9 @@ async function main () {
           driveLog.push('mouseMoved(' + p.x + ',' + p.y + ')')
         } else driveLog.push('mouseMoved(point missing)')
       }
-      await sleep(220)
+      await sleep(st.hold === undefined ? 220 : st.hold)
     }
-    await sleep(260)
+    await sleep(st.post === undefined ? 260 : st.post)
     const measured = await cdp.send('Runtime.evaluate', { expression: MEASURE, returnByValue: true }, sessionId)
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true }, sessionId)
     fs.writeFileSync(path.join(OUT, name + '.png'), Buffer.from(shot.data, 'base64'))
