@@ -116,6 +116,11 @@ const STATES = {
   'motion-before': { blob: blob(), drive: [], hold: 0, post: 60 },
   'motion-during': { blob: blob(), drive: [{ hover: '[data-ts-team] .ts-row[data-agent="arch"]' }], hold: 0, post: 70 },
   'motion-after': { blob: blob(), drive: [{ hover: '[data-ts-team] .ts-row[data-agent="arch"]' }], hold: 0, post: 420 },
+  /* the same transition, sampled from inside the page: a ramp with its own
+     timestamps, so the duration and easing are measured, not inferred. */
+  'motion-ramp': { blob: blob(), post: 460, hold: 0, drive: [
+    { hover: '[data-ts-team] .ts-row[data-agent="arch"]' },
+    { sampleMotion: '[data-ts-team] .ts-row[data-agent="arch"] .ts-row-pin' }] },
   /* instrument self-check: what the /api/profiles bridge actually answers */
   apiprobe: { blob: blob(), drive: [{ probeApi: '/api/profiles' }], hold: 0, post: 200 }
 }
@@ -148,6 +153,7 @@ const CAPS = [
   { w: 1512, theme: 'dark', state: 'motion-before', appW: 1456 },
   { w: 1512, theme: 'dark', state: 'motion-during', appW: 1456 },
   { w: 1512, theme: 'dark', state: 'motion-after', appW: 1456 },
+  { w: 1512, theme: 'dark', state: 'motion-ramp', appW: 1456 },
   { w: 1512, theme: 'dark', state: 'apiprobe', appW: 1456 }
 ]
 
@@ -283,6 +289,8 @@ const MEASURE = `(() => {
     addpopText: addpop ? (addpop.innerText || '').replace(/\\n{2,}/g, '\\n').slice(0, 500) : '',
     commits: (window.__HIVE_COMMITS__ || []).slice(-8),
     setTrace: (window.__HIVE_SET_TRACE__ || []).slice(-14),
+    motionSamples: (window.__HIVE_MOTION__ || []).slice(0, 25),
+    hoverAt: window.__HIVE_HOVER_AT__ || null,
     bridge: { present: !!window.hermesDesktop, apiType: typeof (window.hermesDesktop || {}).api,
               calls: (window.__HIVE_API_CALLS__ || []).slice(0, 6), probe: window.__HIVE_PROBE__ || null,
               now: Math.round(performance.now()),
@@ -386,6 +394,15 @@ const DRIVE = {
   probeApi: (p) => `(() => { window.__HIVE_PROBE__ = 'pending'; const r = window.hermesDesktop && window.hermesDesktop.api({ path: ${JSON.stringify(p)} });
      Promise.resolve(r).then((v) => { window.__HIVE_PROBE__ = 'ok ' + JSON.stringify(v).slice(0, 400) },
        (e) => { window.__HIVE_PROBE__ = 'err ' + (e && e.message) }); return 'probed' })()`,
+  /* sample one property mid-transition from inside the page, so the motion
+     evidence is a ramp (values with their own timestamps) instead of three
+     screenshots whose timing depends on CDP round-trips. */
+  sampleMotion: (sel) => `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'missing'
+     const out = (window.__HIVE_MOTION__ = [])
+     const t0 = performance.now()
+     const tick = () => { out.push({ t: Math.round(performance.now() - t0), o: +(getComputedStyle(el).opacity) })
+       if (performance.now() - t0 < 420) setTimeout(tick, 20) }
+     tick(); return 'sampling' })()`,
   hover: (sel) => `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'missing'
      el.setAttribute('data-hovered','true'); el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}))
      el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true})); return 'hovered' })()`,
@@ -455,6 +472,7 @@ async function main () {
         if (val) {
           const p = JSON.parse(val)
           await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y, buttons: 0 }, sessionId)
+          await cdp.send('Runtime.evaluate', { expression: 'window.__HIVE_HOVER_AT__ = Math.round(performance.now())', returnByValue: true }, sessionId)
           driveLog.push('mouseMoved(' + p.x + ',' + p.y + ')')
         } else driveLog.push('mouseMoved(point missing)')
       }
