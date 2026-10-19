@@ -1221,6 +1221,67 @@ function hiveOrderMembers(members) {
     .map((x) => x.m)
 }
 
+/** The room has ONE team leader (F-10): the pin is exclusive, so
+ *  `hiveOrderMembers`' "leader first" key can never be ambiguous. Turning the
+ *  pin ON sets the target and clears every other member in the SAME update, so
+ *  no intermediate roster ever holds two leads; turning it OFF clears the
+ *  target only — which clears all, since exclusivity guarantees nobody else was
+ *  on. Pure, and the input array is never mutated. */
+function hiveApplyLeader(members, profile, next) {
+  const list = Array.isArray(members) ? members : []
+  const key = hiveNormalize(profile)
+  const on = next === true
+  // A pin aimed at a name the room does not hold is a NO-OP. Without this the
+  // "on" branch would unset every non-match — a typo or a race (the member left
+  // between the click and the write) would leave the room leaderless instead of
+  // simply not pinning anyone.
+  if (!key || !list.some((m) => m && typeof m === 'object' && hiveNormalize(m.profile) === key)) return list
+  return list.map((m) => {
+    if (!m || typeof m !== 'object') return m
+    if (hiveNormalize(m.profile) === key) return { ...m, leader: on }
+    return on && m.leader === true ? { ...m, leader: false } : m
+  })
+}
+
+/** Repair a roster on the way in from storage (F-10). Before the pin was
+ *  exclusive, pinning A then B persisted `leader: true` on BOTH, so a room
+ *  saved by the buggy build still holds several leads after the upgrade — and
+ *  hydrating it verbatim would paint two crowns and two top rows, the exact
+ *  symptom this card removes. Collapse to one: the survivor is the lead the
+ *  roster would already have shown first (lowest `order`, array position as the
+ *  fallback — the same key hiveOrderMembers ranks by), and the rest are cleared
+ *  through hiveApplyLeader, so live pinning and boot repair cannot drift.
+ *  Pure, and the input array is never mutated. */
+function hiveCollapseLeaders(members) {
+  const list = Array.isArray(members) ? members : []
+  const leads = []
+  list.forEach((m, i) => {
+    if (m && typeof m === 'object' && m.leader === true) leads.push({ m, i })
+  })
+  if (leads.length < 2) return list
+  const rank = (x) => {
+    const raw = Number(x.m.order)
+    return Number.isFinite(raw) ? raw : x.i
+  }
+  leads.sort((a, b) => (rank(a) - rank(b)) || String(a.m.profile || '').localeCompare(String(b.m.profile || '')))
+  const keep = leads[0].i
+  const key = hiveNormalize(list[keep].profile)
+  if (key) return hiveApplyLeader(list, key, true)
+  // A saved lead with no usable profile cannot be addressed by name; keep it by
+  // position rather than drop the only lead the room has.
+  return list.map((m, i) => (i !== keep && m && typeof m === 'object' && m.leader === true ? { ...m, leader: false } : m))
+}
+
+/** The leader's identity mark (F-10). The row needs two things from the flag —
+ *  whether this member is the lead, and the words that name the lead — and both
+ *  are decided here so they can be asserted without a DOM. A non-leader and a
+ *  malformed entry get `null`: the row then renders no crown at all, rather than
+ *  a crown with an empty label. */
+function hiveLeaderBadge(member) {
+  if (!member || typeof member !== 'object' || member.leader !== true) return null
+  return { label: 'Team lead', title: 'Team lead' }
+}
+
 /** Team-strip summary (P-02): an honest count, never the internal `N/11` cap. */
 function hiveRosterSummary(count, working) {
   const n = Number(count) || 0
@@ -1743,10 +1804,16 @@ async function hiveMintMember(profile, options = {}) {
       status: 'idle', browser: false, muted: false, contextMode,
       // P-04: the pin is settable AT ADD TIME (the popover row carries a toggle),
       // and `order` is the room's stable position for the new member.
+      // F-10: the pin is exclusive, so a member minted as leader goes through the
+      // same rule as the row toggle — it clears any existing leader in THIS write.
       leader: options.leader === true,
       order: list.length
     }
-    $hiveMembers.set([...$hiveMembers.get(), member])
+    // Add-as-leader runs the same exclusive rule as the row toggle, with the new
+    // member already in the list — so it clears any existing leader, and the room
+    // never shows two pinned members behind it.
+    const minted = [...$hiveMembers.get(), member]
+    $hiveMembers.set(options.leader === true ? hiveApplyLeader(minted, key, true) : minted)
     if (!$hiveMembers.get().some((m) => m.browser)) {
       $hiveMembers.set($hiveMembers.get().map((m) => (hiveNormalize(m.profile) === key ? { ...m, browser: true } : m)))
     }
@@ -2013,7 +2080,9 @@ async function hiveBootHydrate() {
     }
     hydrated.push(live)
   }
-  $hiveMembers.set(hydrated)
+  // F-10: a room saved before the pin was exclusive can carry several leads;
+  // collapse them to one here, so boot cannot re-paint the bug the pin fixed.
+  $hiveMembers.set(hiveCollapseLeaders(hydrated))
   // Write the normalized v2 shape even when the source was legacy v1.
   hivePersist()
 }
@@ -2100,8 +2169,11 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-col-right .ts-row-name,.ts-sheet[data-side="right"] .ts-row-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal}
 }
 .ts-row-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ui-text-tertiary)}
-.ts-chip{display:inline-flex;align-items:center;height:14px;padding:0 var(--ts-s1);border-radius:var(--ts-r-pill);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ts-warn);background:color-mix(in srgb, var(--ts-warn) 10%, transparent);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
-.ts-chip:hover{background:color-mix(in srgb, var(--ts-warn) 22%, transparent)}
+/* F-10: the leader's crown. Colour comes from the theme's amber ramp, which the
+   .ts-workspace block already re-declares per theme — so leadership is the
+   same signal in light and dark, and the markup carries no colour at all.
+   display:block keeps the 11 px svg off the text baseline inside the flex row. */
+.ts-lead-crown{flex:0 0 auto;display:block;color:var(--ts-warn)}
 /* P1.5 F-8: the pin is a control on the roster row, not a read-only badge. The
    roster is where a PINNED member is shown, so the roster is where it can be
    unpinned — the toggle reuses the Add-agent popover's row-toggle anatomy
@@ -3220,13 +3292,15 @@ async function hiveSelectProject(project) {
   host.notify({ kind: 'success', message: `Hive: project → ${next.name}. New member sessions use its folder; history is per-room until Phase 2.` })
 }
 
-/** Mark/clear the room's leader flag (presentational ordering only). */
+/** Pin/unpin the room's leader (presentational ordering only). F-10: the pin is
+ *  exclusive — hiveApplyLeader clears every other member's flag in the same
+ *  write, so pinning B unpins A rather than leaving a room of "leaders". */
 function hiveSetLeader(profile) {
   const key = hiveNormalize(profile)
   const list = $hiveMembers.get()
   const cur = list.find((m) => hiveNormalize(m.profile) === key)
   const next = !(cur && cur.leader === true)
-  $hiveMembers.set(list.map((m) => (hiveNormalize(m.profile) === key ? { ...m, leader: next } : m)))
+  $hiveMembers.set(hiveApplyLeader(list, key, next))
   hivePersist()
 }
 
@@ -3686,13 +3760,34 @@ function TsAgentDetail({ m, status, turn }) {
   })
 }
 
+/** F-10: the leader's crown, inline SVG. Not an emoji: the mark has to take the
+ *  theme's amber (`.ts-lead-crown` → `--ts-warn`) and stay crisp on both themes,
+ *  which a glyph inherited from the font cannot promise. 11 px keeps it inside
+ *  the 40 px row's name line without adding height, and `currentColor` means the
+ *  colour lives in CSS, not in the markup. */
+function TsLeadCrown() {
+  return jsxs('svg', {
+    className: 'ts-lead-crown', width: 11, height: 11, viewBox: '0 0 16 16',
+    role: 'img', 'aria-label': 'Team lead', focusable: 'false',
+    children: [
+      jsx('title', { children: 'Team lead' }),
+      jsx('path', { d: 'M1.5 4.4l3.6 2.9L8 2.8l2.9 4.5 3.6-2.9L13 12H3L1.5 4.4z', fill: 'currentColor' }),
+      jsx('path', { d: 'M3 12.9h10v1.1H3z', fill: 'currentColor' })
+    ]
+  })
+}
+
 function TsAgentRow({ m, status, turn, open }) {
   const selected = useValue($tsAgentSelected)
   const timeline = useValue($hiveTimeline)
   const isSelected = hiveNormalize(selected || '') === hiveNormalize(m.profile)
-  // Name line: dot · @profile · pin chip · browser glyph · busy glyph.
+  // F-10: one descriptor decides both halves of the leader mark — whether the
+  // row is the lead, and the words that name it ("Team lead", never a bare flag).
+  const lead = hiveLeaderBadge(m)
+  // Name line: dot · crown (leader only) · @profile · pin control · browser glyph
+  // · busy glyph.
   // Meta line: model · last activity · duration — no role mojibake, and the
-  // leader flag is visible as a chip instead of a word buried in the meta line.
+  // leader flag is visible as a crown instead of a word buried in the meta line.
   // P-03: model · last activity · duration — the row's own history, not just
   // the turn that happens to be live.
   const last = hiveLastProfileEntry(timeline, m.profile)
@@ -3716,21 +3811,32 @@ function TsAgentRow({ m, status, turn, open }) {
       jsxs('span', { className: 'ts-team-body flex min-w-0 flex-1 flex-col gap-0.5', children: [
         jsxs('span', { className: 'flex min-w-0 items-center gap-1.5', children: [
           jsx(TsStatusDot, { status }),
+          // F-10: the crown is the LEAD's mark, so it sits where the name is read
+          // — before it — and it is decoration for the row's state, not a control:
+          // clicking it still selects the member like the rest of the row.
+          lead ? jsx(TsLeadCrown, {}) : null,
           jsx('span', { className: 'ts-row-name truncate', children: '@' + m.profile }),
           // P1.5 F-8: pin/unpin from the row that shows the state. Same anatomy
           // as the Add-agent popover's row toggle (ts-addpop-pin): data-on
-          // carries the state, aria-pressed names it, the PINNED chip is its
-          // on-label. It lives on the NAME line, where the read-only chip used to
-          // sit, so the meta line below keeps its full width. The click stops
-          // here — the row's own click selects and expands the member.
+          // carries the state, aria-pressed names it. It lives on the NAME line,
+          // where the read-only chip used to sit, so the meta line below keeps
+          // its full width. The click stops here — the row's own click selects
+          // and expands the member.
+          // F-10: the ON label is the ACTION ("Unpin"), not a second state word.
+          // The crown already says "this is the lead" in the theme's amber; a
+          // "Pinned" chip beside it said the same thing twice and cost ~40 px of
+          // a 240–280 px rail where the profile name is already truncated. State
+          // is carried by the crown + aria-pressed; the word is what the click
+          // does.
           jsx('button', {
             type: 'button', className: 'ts-row-pin', 'data-on': m.leader ? 'true' : 'false',
             'aria-pressed': m.leader ? 'true' : 'false',
+            'aria-label': m.leader ? `Unpin @${m.profile}` : `Pin @${m.profile} to the top of the roster`,
             title: m.leader
               ? `Unpin @${m.profile}`
               : `Pin @${m.profile} to the top of the roster. Coordination roles arrive in Phase 3.`,
             onClick: (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); hiveSetLeader(m.profile) },
-            children: m.leader ? jsx('span', { className: 'ts-chip', children: 'Pinned' }) : 'Pin'
+            children: m.leader ? 'Unpin' : 'Pin'
           }),
           m.browser ? jsx(icons.Globe, { size: 11, className: 'shrink-0 text-muted-foreground' }) : null,
           hiveStatusGlyph(status)
