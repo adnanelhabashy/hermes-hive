@@ -2102,6 +2102,20 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-row-meta{font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);color:var(--ui-text-tertiary)}
 .ts-chip{display:inline-flex;align-items:center;height:14px;padding:0 var(--ts-s1);border-radius:var(--ts-r-pill);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ts-warn);background:color-mix(in srgb, var(--ts-warn) 10%, transparent);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
 .ts-chip:hover{background:color-mix(in srgb, var(--ts-warn) 22%, transparent)}
+/* P1.5 F-8: the pin is a control on the roster row, not a read-only badge. The
+   roster is where a PINNED member is shown, so the roster is where it can be
+   unpinned — the toggle reuses the Add-agent popover's row-toggle anatomy
+   (.ts-addpop-pin): micro type, tertiary text, data-on for the state. It stays
+   quiet until its row is hovered, is the selected row, or the control itself is
+   focused — so a full roster does not read as ten buttons; on a touch/hover-less
+   surface it is always visible, because a hidden control is no control. */
+.ts-row-pin{flex:0 0 auto;padding:0 var(--ts-s1);border:0;background:transparent;border-radius:var(--ts-r);color:var(--ui-text-tertiary);font-size:var(--ts-f-micro);line-height:var(--ts-lh-micro);cursor:pointer;opacity:0;transition:opacity var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
+.ts-row:hover .ts-row-pin,.ts-row-pin:focus-visible,.ts-row[data-selected="true"] .ts-row-pin{opacity:1}
+.ts-row-pin[data-on="true"]{opacity:1}
+.ts-row-pin:hover{color:var(--ui-text-primary)}
+@media (hover:none){
+.ts-row-pin{opacity:1}
+}
 .ts-avatar{display:inline-flex;width:24px;height:24px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--ts-r);font-size:var(--ts-f-sm);font-weight:600;line-height:1}
 .ts-card{border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-card);padding:var(--ts-s2) var(--ts-s3)}
 .ts-linkcard{display:inline-flex;align-items:center;padding:var(--ts-s1) var(--ts-s2);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:var(--ui-bg-card);color:var(--ui-text-secondary);font-size:var(--ts-f-sm);line-height:var(--ts-lh-sm);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
@@ -3665,7 +3679,21 @@ function TsAgentRow({ m, status, turn, open }) {
         jsxs('span', { className: 'flex min-w-0 items-center gap-1.5', children: [
           jsx(TsStatusDot, { status }),
           jsx('span', { className: 'ts-row-name truncate', children: '@' + m.profile }),
-          m.leader ? jsx('span', { className: 'ts-chip', title: 'Pinned to the top of the roster', children: 'Pinned' }) : null,
+          // P1.5 F-8: pin/unpin from the row that shows the state. Same anatomy
+          // as the Add-agent popover's row toggle (ts-addpop-pin): data-on
+          // carries the state, aria-pressed names it, the PINNED chip is its
+          // on-label. It lives on the NAME line, where the read-only chip used to
+          // sit, so the meta line below keeps its full width. The click stops
+          // here — the row's own click selects and expands the member.
+          jsx('button', {
+            type: 'button', className: 'ts-row-pin', 'data-on': m.leader ? 'true' : 'false',
+            'aria-pressed': m.leader ? 'true' : 'false',
+            title: m.leader
+              ? `Unpin @${m.profile}`
+              : `Pin @${m.profile} to the top of the roster. Coordination roles arrive in Phase 3.`,
+            onClick: (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); hiveSetLeader(m.profile) },
+            children: m.leader ? jsx('span', { className: 'ts-chip', children: 'Pinned' }) : 'Pin'
+          }),
           m.browser ? jsx(icons.Globe, { size: 11, className: 'shrink-0 text-muted-foreground' }) : null,
           hiveStatusGlyph(status)
             ? jsx('span', { className: cn('shrink-0', hiveStatusBusy(status) && 'animate-pulse'), style: { ...HIVE_T.xs, color: status === 'error' ? 'var(--ts-bad)' : undefined }, children: hiveStatusGlyph(status) })
