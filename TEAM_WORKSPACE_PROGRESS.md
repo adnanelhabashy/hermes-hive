@@ -883,3 +883,100 @@ Measured (`probe --only=-full`):
 1200              327/196            196/196 clamp 2
 1000 (below 1200) 327/196            unchanged, ellipsis
 ```
+
+### 5/8 F-5 — the Approvals tab speaks to the user
+
+Two strings in `TsApprovalsTab` were architecture, not copy: `A convenience mirror — the app's own
+modal still owns live approval prompts. Choices come from the server verbatim.` and the empty-state
+hint `Answer prompts in the app's own modal — this tab mirrors the queue, it does not own it.` The
+panel meta line is now the one user-facing sentence — `Approvals are answered in the app's own
+prompt.` — the empty state reads `Nothing is waiting on you right now.`, and the mechanism
+(`approval.pending` mirror, choices verbatim from the server, the app's own modal owning the live
+prompt) moved into the code comment beside the render. No other string in the tab changed; the
+error branch already said `Answer those in the native prompt.`
+
+### 6/8 F-7 — readable micro-meta sits at the tertiary token
+
+`--ui-text-quaternary` is 36% of the base colour against `--ui-text-tertiary`'s 54% (both read from
+the app stylesheet). The three elements QA read as low-contrast in separate passes — the right
+panel's work-item duration (`0s`), strip meta, the composer hint — now name
+`var(--ui-text-tertiary)` directly:
+```
+.ts-row-meta    var(--ts-idle)  -> var(--ui-text-tertiary)     (the Work-tab row meta, incl. "0s")
+.ts-empty-hint  var(--ts-idle)  -> var(--ui-text-tertiary)
+.ts-mention-model var(--ts-idle) -> var(--ui-text-tertiary)
+composer hint   class text-muted-foreground -> inline var(--ui-text-tertiary)   (plugin.js)
+```
+`.ts-strip-meta` was already `--ui-text-tertiary`; `--ts-idle` keeps its real job as the semantic
+idle *state* tone (`hiveTaskStatusTone`'s OPEN colour), which is why the meta rules no longer route
+through it. The rule and its reason are written beside the token block. No colour literal was added;
+quaternary remains in use only as the system-member avatar colour in `hiveAccent`.
+
+### 7/8 F-6 — the project chip renders one label, from one place
+
+The trigger handed Radix a `placeholder` and let it decide the label. In the app's own Radix build
+(`select-CQr2y4up.js`, `shouldShowPlaceholder = e === '' || e === undefined`) the value node is
+either the placeholder span or a portal of the selected item's text, and the item this Select
+selects is itself labelled `No project` — two sources for one string. The chip now renders its own
+children — `No project` with nothing selected, the project's name with one — which sets Radix's
+`valueNodeHasChildren` (`SelectItemText`'s portal is gated on `!valueNodeHasChildren`) so no second
+label can be injected: exactly one in both states.
+
+Also corrected the capture driver's `SelectValue` double (`p15-real/stub.js`, one line): it always
+rendered the placeholder and ignored children, which contradicts the real component's
+`shouldShowPlaceholder ? placeholder : children` and would have painted an empty chip once the
+plugin stopped passing a placeholder. Flagged for SENTRY as a harness-double correction, not
+evidence.
+
+Not verified: the duplicate in the **live** app. The packaged build opens no CDP port (checked:
+nothing listening on 9222/9333; the only loopback listener is the gateway on 8789) and screen
+capture is unavailable in this session (cua-driver is running with
+`--cua-internal-gate-missing-screen-recording`), so the live Radix render could not be read here.
+What is verified is the plugin-side source of the second label, from the app's own component code.
+
+### 8/8 F-8 — the roster row can pin and unpin
+
+The only pin affordance outside the roster was the Add-agent popover's row toggle, so a member
+rendered as PINNED could not be unpinned where it is shown. `TsAgentRow` now carries its own toggle
+reusing `ts-addpop-pin`'s anatomy — `data-on` for the state, `aria-pressed`, the same PINNED chip as
+its on-label, `title` naming the action — with the click stopped at the control so the row's own
+click still selects and expands the member.
+
+The first cut put the button in the row's trailing slot and cost the meta line 7px, which started
+ellipsizing `v4.1-flash · 09:00 PM` at 208px (caught by re-capturing 1512/1000); it now sits on the
+name line, where the read-only chip used to be, and the meta line keeps its width. It stays quiet at
+rest and is visible on row hover, on the selected row, on its own focus, and always under
+`@media (hover:none)`.
+
+Measured, real DOM, one click (`p15-real.cjs` + a local `pin-click` state in a scratch copy of the
+driver; the committed driver's state list is untouched):
+
+```
+fa8c-1512-pin-click-dark   ready=true tsClasses=33 scopeNodes=231 clipped=0 errors=0
+driveLog  hover([data-ts-team] .ts-row[data-agent="arch"]) -> hovered ; mouseMoved(104,246)
+          click([data-ts-team] .ts-row[data-agent="arch"] .ts-row-pin) -> clicked
+roster before  you · @arch(unpinned) · @forge(PINNED) · @default(selected)
+roster after   you · @arch(PINNED, moved first) · @forge(PINNED) · @default(selected)
+```
+So the click pinned @arch and the roster reordered (@arch first, `hiveOrderMembers`), @default is
+still the selected row (its highlight is unchanged) — the pin click did not toggle the row. `@forge`
+and `@arch` both read PINNED because `hiveSetLeader` toggles one member's flag rather than moving a
+single one; `@default` renders the `Pin` label. `clipped=0` in the settled and hover states at 1512,
+the same reading as the pre-F-8 baseline; the only added markup is the three row toggles.
+
+## P1.5 REVISE round — suites at HEAD
+
+`1a706fb`, worktree clean, `plugin.js` sha256
+`70afcb124778784f677a8f90c8aa4437afc3666b79a388eb2986e2bda3841f9d`:
+
+```
+$ node test.cjs                                      -> ALL PASS 312/312
+$ node smoke-render.mjs                              -> ALL PASS 85/85
+$ node css-layout-probe.cjs --widths=1512,1456,1200,1000,700,600,500
+                                                     -> ALL PASS (exit 0)
+```
+
+Real-DOM captures run for this round went to
+`~/.hermes/profiles/forge/cache/scratch/{f6verify,pinrun}/` — SENTRY's `p15-captures/` was not
+written to. Not re-verified here (SENTRY owns them): the light-theme repaint, motion (P-19), and the
+add-popup row pin toggle that needs a seeded `/api/profiles`.
