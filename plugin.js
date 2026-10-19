@@ -2060,8 +2060,14 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-workspace *{transition-duration:.01ms!important;animation-duration:.01ms!important}
 }
 .ts-toolbar{grid-column:1/-1;grid-row:1;display:flex;align-items:center;gap:var(--ts-s2);min-width:0;min-height:var(--ts-toolbar-h);padding:0 var(--ts-s3);border-bottom:1px solid var(--ui-stroke-secondary);overflow:hidden}
-.ts-toolbar-title{max-width:280px;overflow:hidden;padding:0;border:0;background:transparent;color:var(--ui-text-primary);font-size:var(--ts-f-lead);line-height:var(--ts-lh-lead);font-weight:600;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
-.ts-toolbar-chip{display:inline-flex;align-items:center;gap:var(--ts-s1);height:22px;max-width:220px;padding:0 var(--ts-s2);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:transparent;color:var(--ui-text-secondary);font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
+/* P1.5 F-4: overflow:hidden resolves a flex item's automatic minimum size to 0,
+   so the room name could be squashed to 16px (and 0px at 500) with its text
+   under-running the box — the one unexplained hit at 700. It never shrinks now;
+   the project chip beside it is the element that gives, and it ellipsizes
+   declaratively instead of being cut. */
+.ts-toolbar-title{flex:0 0 auto;max-width:280px;overflow:hidden;padding:0;border:0;background:transparent;color:var(--ui-text-primary);font-size:var(--ts-f-lead);line-height:var(--ts-lh-lead);font-weight:600;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.ts-toolbar-chip{display:inline-flex;align-items:center;gap:var(--ts-s1);height:22px;min-width:0;max-width:220px;padding:0 var(--ts-s2);border:1px solid var(--ui-stroke-secondary);border-radius:var(--ts-r);background:transparent;color:var(--ui-text-secondary);font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);cursor:pointer;transition:background var(--ts-dur) var(--ts-ease),color var(--ts-dur) var(--ts-ease)}
+.ts-toolbar-chip > *{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ts-toolbar-chip:hover{background:var(--ui-row-hover-background);color:var(--ui-text-primary)}
 .ts-toolbar-divider{width:1px;align-self:stretch;margin:var(--ts-s2) 0;background:var(--ui-stroke-secondary)}
 .ts-col{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
@@ -2200,6 +2206,9 @@ const HIVE_TS_CSS = `.ts-workspace{
 }
 @media (max-width:600px){
 .ts-workspace{grid-template-columns:minmax(0,1fr)}
+/* P1.5 F-4: the narrow toolbar carries the two sheet toggles as well, so it
+   takes the tighter gutter/gap step rather than clipping a control. */
+.ts-toolbar{gap:var(--ts-s1);padding:0 var(--ts-s2)}
 .ts-workspace > .ts-col-team,.ts-workspace > .ts-col-right{display:none}
 .ts-col-center{grid-column:1}
 /* Both columns have left the grid, so the toolbar toggles are the only way to
