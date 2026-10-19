@@ -1221,6 +1221,22 @@ function hiveOrderMembers(members) {
     .map((x) => x.m)
 }
 
+/** The room has ONE team leader (F-10): the pin is exclusive, so
+ *  `hiveOrderMembers`' "leader first" key can never be ambiguous. Turning the
+ *  pin ON sets the target and clears every other member in the SAME update, so
+ *  no intermediate roster ever holds two leads; turning it OFF clears the
+ *  target only — which clears all, since exclusivity guarantees nobody else was
+ *  on. Pure, and the input array is never mutated. */
+function hiveApplyLeader(members, profile, next) {
+  const key = hiveNormalize(profile)
+  const on = next === true
+  return (Array.isArray(members) ? members : []).map((m) => {
+    if (!m || typeof m !== 'object') return m
+    if (hiveNormalize(m.profile) === key) return { ...m, leader: on }
+    return on && m.leader === true ? { ...m, leader: false } : m
+  })
+}
+
 /** Team-strip summary (P-02): an honest count, never the internal `N/11` cap. */
 function hiveRosterSummary(count, working) {
   const n = Number(count) || 0
@@ -1743,10 +1759,16 @@ async function hiveMintMember(profile, options = {}) {
       status: 'idle', browser: false, muted: false, contextMode,
       // P-04: the pin is settable AT ADD TIME (the popover row carries a toggle),
       // and `order` is the room's stable position for the new member.
+      // F-10: the pin is exclusive, so a member minted as leader goes through the
+      // same rule as the row toggle — it clears any existing leader in THIS write.
       leader: options.leader === true,
       order: list.length
     }
-    $hiveMembers.set([...$hiveMembers.get(), member])
+    // Add-as-leader runs the same exclusive rule as the row toggle, with the new
+    // member already in the list — so it clears any existing leader, and the room
+    // never shows two pinned members behind it.
+    const minted = [...$hiveMembers.get(), member]
+    $hiveMembers.set(options.leader === true ? hiveApplyLeader(minted, key, true) : minted)
     if (!$hiveMembers.get().some((m) => m.browser)) {
       $hiveMembers.set($hiveMembers.get().map((m) => (hiveNormalize(m.profile) === key ? { ...m, browser: true } : m)))
     }
@@ -3220,13 +3242,15 @@ async function hiveSelectProject(project) {
   host.notify({ kind: 'success', message: `Hive: project → ${next.name}. New member sessions use its folder; history is per-room until Phase 2.` })
 }
 
-/** Mark/clear the room's leader flag (presentational ordering only). */
+/** Pin/unpin the room's leader (presentational ordering only). F-10: the pin is
+ *  exclusive — hiveApplyLeader clears every other member's flag in the same
+ *  write, so pinning B unpins A rather than leaving a room of "leaders". */
 function hiveSetLeader(profile) {
   const key = hiveNormalize(profile)
   const list = $hiveMembers.get()
   const cur = list.find((m) => hiveNormalize(m.profile) === key)
   const next = !(cur && cur.leader === true)
-  $hiveMembers.set(list.map((m) => (hiveNormalize(m.profile) === key ? { ...m, leader: next } : m)))
+  $hiveMembers.set(hiveApplyLeader(list, key, next))
   hivePersist()
 }
 
