@@ -3989,7 +3989,11 @@ function TsApprovalsTab({ data }) {
     className: 'ts-scroll',
     children: jsxs('div', { className: 'flex flex-col gap-1 p-2', 'data-ts-approvals': true, children: [
       jsx('span', { className: 'ts-empty-head', children: 'Approvals' }),
-      jsx('span', { className: 'ts-strip-meta', children: 'A convenience mirror — the app\u2019s own modal still owns live approval prompts. Choices come from the server verbatim.' }),
+      jsx('span', { className: 'ts-strip-meta', children: 'Approvals are answered in the app\u2019s own prompt.' }),
+      // P1.5 F-5: the implementation notes that used to be printed here — the tab
+      // is a convenience mirror of `approval.pending`, choices come from the
+      // server verbatim, and the app's own modal owns the live prompt — are
+      // architecture, not copy. They live in this comment now.
       errored.length
         ? jsx('div', { className: 'ts-card', children: jsxs('div', { className: 'flex flex-col gap-0.5', children: [
             jsx('span', { className: 'font-medium text-xs', children: 'Approval reads unavailable' }),
@@ -3998,7 +4002,7 @@ function TsApprovalsTab({ data }) {
         : null,
       ...(!rows.length && !errored.length ? [jsxs('div', { className: 'ts-empty', key: 'empty', children: [
         jsx('span', { className: 'ts-empty-body', children: 'No pending approvals.' }),
-        jsx('span', { className: 'ts-empty-hint', children: 'Answer prompts in the app\u2019s own modal — this tab mirrors the queue, it does not own it.' })
+        jsx('span', { className: 'ts-empty-hint', children: 'Nothing is waiting on you right now.' })
       ] })] : []),
       ...rows.map((m) => {
         const info = byProfile[m.profile]
