@@ -3340,11 +3340,19 @@ function TsProjectSelect() {
     children: [
       jsx(icons.FolderOpen, { size: 13, className: 'shrink-0 text-muted-foreground' }),
       list && list.length
+        // P1.5 F-6: one label, rendered here. Radix decides what the trigger
+        // shows — either its `placeholder` span or the text it portals out of
+        // the selected item — so a placeholder plus an item that is ALSO
+        // labelled "No project" is two sources for one label. Passing `children`
+        // makes the trigger's content ours (Radix's `valueNodeHasChildren`
+        // suppresses the item-text portal), and the chip reads exactly once in
+        // both states: "No project" with nothing selected, the project's name
+        // with one selected.
         ? jsx(Select, {
             value: active ? 'p:' + active.id : 'none',
             onValueChange: pick,
             children: [
-              jsx(SelectTrigger, { className: 'ts-toolbar-chip', children: jsx(SelectValue, { placeholder: 'No project' }) }),
+              jsx(SelectTrigger, { className: 'ts-toolbar-chip', children: jsx(SelectValue, { children: active ? (active.name || active.slug) : 'No project' }) }),
               jsx(SelectContent, {
                 children: [
                   jsx(SelectItem, { value: 'none', children: 'No project' }),

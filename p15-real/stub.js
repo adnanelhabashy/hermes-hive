@@ -387,7 +387,7 @@ export function DropdownMenuItem({ children, onSelect, ...rest } = {}) {
 export function DropdownMenuSeparator() { return jsx('div', { className: 'my-1 h-px bg-[var(--ui-stroke-secondary)]' }) }
 export function Select({ value, children }) { return jsx('div', { className: 'inline-flex flex-1', 'data-select': value, children }) }
 export function SelectTrigger({ className, children, ...rest } = {}) { return jsx('button', { type: 'button', className: cn(FIELD, 'items-center justify-between', className), ...rest, children }) }
-export function SelectValue({ placeholder }) { return jsx('span', { className: 'truncate text-[var(--ui-text-quaternary)]', children: placeholder }) }
+export function SelectValue({ placeholder = '', children }) { return jsx('span', { className: 'truncate text-[var(--ui-text-quaternary)]', children: children !== undefined ? children : placeholder }) }
 export function SelectContent({ children, className, ...rest } = {}) {
   if (!globalThis.__HIVE_INLINE_MENUS__) return null
   return jsx('div', { className: cn('flex flex-col', className), ...rest, children })
