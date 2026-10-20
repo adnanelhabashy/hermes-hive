@@ -1324,6 +1324,13 @@ function hiveLastActivityTs(entries) {
   return null
 }
 
+/** A member needs recovery when it exists but holds no live session. After an
+ *  app restart every member hydrates with `sessionId: null` (only the stored id
+ *  survives), so this is the normal post-restart state — not an error. */
+function hiveNeedsSession(member) {
+  return !!member && !member.sessionId
+}
+
 // --CORE-END--
 
 // ── accents ─────────────────────────────────────────────────────────────────
@@ -1414,12 +1421,18 @@ function hiveMemberBySession(sessionId) {
 const _hiveHops = new Map()
 
 async function hiveDeliverTo(member, text, opts = {}) {
-  if (!member || !member.sessionId) {
-    host.notify({
-      kind: 'warning',
-      message: `Hive: @${member ? member.profile : '?'} has no live session — choose "Fresh context".`
-    })
-    return
+  if (!member) return
+  if (!member.sessionId) {
+    // Recovery-first (A4): a session-less member is the NORMAL post-restart
+    // state, so the first relay starts them a fresh session and the delivery
+    // continues. The old warning survives only as the mint-failure path.
+    const live = await hiveRecoverMember(member.profile)
+    if (!live) {
+      host.notify({ kind: 'warning', message: `Hive: @${member.profile} has no live session and starting one failed.` })
+      return
+    }
+    hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${member.profile} had no live session — started a fresh one.`, to: null })
+    member = live
   }
   const payload = hiveBuildContextEnvelope({
     mode: member.contextMode,
@@ -1799,15 +1812,21 @@ async function hiveMintMember(profile, options = {}) {
   try {
     const created = await host.request('session.create', params)
     const contextMode = hiveNormalizeContextMode(options.contextMode)
+    // Recovery re-mints a member that never left the room (hiveFreshContext):
+    // it must land back where it was — same position, same crown, same flags
+    // and model — instead of being appended as a brand-new arrival.
     const member = {
       profile: key, sessionId: created.session_id, storedId: created.stored_session_id || null,
-      status: 'idle', browser: false, muted: false, contextMode,
+      status: 'idle', browser: options.browser === true, muted: options.muted === true, contextMode,
       // P-04: the pin is settable AT ADD TIME (the popover row carries a toggle),
       // and `order` is the room's stable position for the new member.
       // F-10: the pin is exclusive, so a member minted as leader goes through the
       // same rule as the row toggle — it clears any existing leader in THIS write.
       leader: options.leader === true,
-      order: list.length
+      order: Number.isFinite(Number(options.order)) ? Number(options.order) : list.length,
+      model: options.model || null,
+      provider: options.provider || null,
+      modelLabel: options.modelLabel || null
     }
     // Add-as-leader runs the same exclusive rule as the row toggle, with the new
     // member already in the list — so it clears any existing leader, and the room
@@ -1820,10 +1839,15 @@ async function hiveMintMember(profile, options = {}) {
     const current = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === key)
     _hiveSeeded.set(key, true)
     await hiveDeliverTo(current, hiveBriefFor(current), { system: true })
-    hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${key} joined the room`, to: null })
-    // Everyone already here learns the new teammate exists — otherwise the
-    // brief's "never invent teammates" rule makes them permanently unreachable.
-    await hiveAnnounceRoster(`@${key} joined the room.`, key)
+    // `quiet` is the recovery path: the member is already in the room, so
+    // "joined the room" and the roster broadcast would both be false news (and
+    // "Start all" would emit O(N²) deliveries for work nobody asked about).
+    if (options.quiet !== true) {
+      hiveAppendTimeline({ from: 'system', kind: 'system', text: `@${key} joined the room`, to: null })
+      // Everyone already here learns the new teammate exists — otherwise the
+      // brief's "never invent teammates" rule makes them permanently unreachable.
+      await hiveAnnounceRoster(`@${key} joined the room.`, key)
+    }
     hivePersist()
     return current
   } catch (err) {
@@ -1863,12 +1887,53 @@ async function hiveSetContextMode(profile, mode) {
   host.notify({ kind: 'success', message: `@${key} context: ${contextMode}. Applies to the next delivery.` })
 }
 
-async function hiveFreshContext(profile) {
+async function hiveFreshContext(profile, options = {}) {
   const key = hiveNormalize(profile)
   const prior = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === key)
   const contextMode = hiveNormalizeContextMode(prior && prior.contextMode)
   $hiveMembers.set($hiveMembers.get().filter((m) => hiveNormalize(m.profile) !== key))
-  await hiveMintMember(key, { contextMode })
+  await hiveMintMember(key, {
+    contextMode,
+    quiet: options.quiet === true,
+    // Re-minting is not a re-join: keep the member's crown, room position and
+    // flags, so "Fresh context" no longer reshuffles the roster or drops the pin.
+    leader: !!(prior && prior.leader === true),
+    order: prior ? prior.order : undefined,
+    browser: !!(prior && prior.browser),
+    muted: !!(prior && prior.muted),
+    model: prior && prior.model,
+    provider: prior && prior.provider,
+    modelLabel: prior && prior.modelLabel
+  })
+}
+
+/** Mint a member's lost session and return the LIVE member, or null when the
+ *  host refused. This is the one recovery entry point: the detail card's "Start
+ *  session", the room's "Start all" and relay auto-mint all land here, so all
+ *  three seed the same room brief through hiveFreshContext → hiveMintMember. */
+async function hiveRecoverMember(profile) {
+  const key = hiveNormalize(profile)
+  await hiveFreshContext(key, { quiet: true })
+  const live = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === key)
+  return live && live.sessionId ? live : null
+}
+
+/** Bring every session-less member online, sequentially, each seeded with the
+ *  room brief through the same single recovery path. One system line reports
+ *  the count — the room reads what happened without N individual
+ *  announcements (each recovery is quiet by design). */
+async function hiveRecoverAll() {
+  const need = $hiveMembers.get().filter(hiveNeedsSession)
+  if (!need.length) return 0
+  let started = 0
+  for (const m of need) {
+    const live = await hiveRecoverMember(m.profile)
+    if (live) started += 1
+  }
+  if (started) {
+    hiveAppendTimeline({ from: 'system', kind: 'system', text: `Started ${started} session(s) — room is live.`, to: null })
+  }
+  return started
 }
 
 /** Set a member's model to a curated WORKING model entry, then mint a fresh
@@ -2947,6 +3012,21 @@ function HiveResetButton() {
   ] })
 }
 
+/** One-click recovery after a restart: mints a session for every member that
+ *  lacks one, each seeded with the room brief. Disabled — with the reason —
+ *  when the room is already fully live. */
+function HiveStartAllButton() {
+  const members = useValue($hiveMembers)
+  const need = members.filter(hiveNeedsSession).length
+  return jsx(Button, {
+    variant: 'ghost', size: 'sm', disabled: !need,
+    title: need ? `Start sessions for ${need} member(s) without one` : 'Every member already has a live session',
+    'aria-label': 'Start all sessions',
+    onClick: () => void hiveRecoverAll(),
+    children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(icons.Zap, { size: 12 }), 'Start all'] })
+  })
+}
+
 function HiveCreateForm({ onDone, onCancel }) {
   const [name, setName] = useState('')
   const [cloneFrom, setCloneFrom] = useState('default')
@@ -3546,6 +3626,7 @@ function TsRoomControls() {
   return jsxs('div', {
     className: 'flex items-center gap-1',
     children: [
+      jsx(HiveStartAllButton, {}),
       jsx(Button, {
         variant: 'ghost', size: 'sm', disabled: stopping || !anyLive,
         title: anyLive ? 'Interrupt every member session' : 'No live member sessions', onClick: () => void stopAll(),
@@ -3654,6 +3735,9 @@ function TsAgentDetail({ m, status, turn }) {
   ))
   const current = mine[0] || null
   const sessionRef = m.storedId || m.sessionId || null
+  // A4: a session-less member (the normal post-restart state) gets an actionable
+  // primary control instead of the dead "Fresh context starts one" sentence.
+  const needsSession = hiveNeedsSession(m)
   const elapsed = turn ? hiveFmtDur((turn.doneAt || Date.now()) - turn.startedAt) : null
   const menuItem = (label, onClick, extra = {}) => jsx(DropdownMenuItem, { onSelect: onClick, ...extra, children: label })
   const metaLine = `model: ${m.model ? `${m.provider || '?'} / ${m.modelLabel || m.model}` : 'profile default'} · context: ${hiveNormalizeContextMode(m.contextMode)} · session: ${m.sessionId ? 'live' : (sessionRef ? 'stored' : 'none')}`
@@ -3714,7 +3798,7 @@ function TsAgentDetail({ m, status, turn }) {
       ] }),
       details
         ? jsxs('div', { className: 'flex flex-col gap-1', 'data-ts-agent-details': m.profile, children: [
-            jsx('span', { className: 'ts-strip-meta break-words', children: sessionRef || 'no session yet — Fresh context starts one' }),
+            jsx('span', { className: 'ts-strip-meta break-words', children: sessionRef || 'no session yet — use Start session below' }),
             jsx(HiveContextModeControl, { m }),
             jsx(HiveModelSubmenu, { m })
           ] })
@@ -3722,6 +3806,18 @@ function TsAgentDetail({ m, status, turn }) {
       // 3. Three visible controls; everything reversible lives in the overflow,
       //    Remove last behind a separator so nothing destructive neighbours Stop.
       jsxs('div', { className: 'flex flex-wrap items-center gap-1', children: [
+        // The recovery action leads the group and is the card's only primary
+        // control: it is the one thing a session-less member needs, and it
+        // disappears the moment the member is live again (the roster dot then
+        // carries the state, so no second "live" chip is needed).
+        needsSession
+          ? jsx(Button, {
+              variant: 'default', size: 'xs', 'data-ts-start-session': m.profile,
+              title: 'Mint a live session for this member, seeded with the room brief',
+              onClick: () => void hiveRecoverMember(m.profile),
+              children: 'Start session'
+            })
+          : null,
         jsx(Button, {
           variant: 'outline', size: 'xs', disabled: status === 'idle' || status === 'offline',
           title: 'Interrupt this session (session.interrupt)',

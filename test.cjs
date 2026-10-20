@@ -20,7 +20,7 @@ const core = src.slice(src.indexOf('\n', start) + 1, end)
 // inside the CORE markers, so nothing here re-declares (and silently drifts
 // from) a real plugin value.
 const factory = new Function(
-  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas,  hiveCardTitle, hiveOrderMembers, hiveApplyLeader, hiveCollapseLeaders, hiveLeaderBadge, hiveRosterSummary, hiveRoomStatus, hiveWorkSummary, hiveOpenItemCount, hiveLastActivityTs, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
+  `${core}\nreturn { hiveParseCoordination, hiveBuildDigest, hiveBuildRoomBrief, hiveRouteUserPost, hiveExtractMentions, hiveNormalize, hiveIsValidProfileName, hiveExtractScratchEntries, hiveIsMemberSession, hiveNormalizeContextMode, hiveBuildHandoffCapsule, hiveBuildContextEnvelope, HIVE_WORKING_MODELS, hiveModelKey, hiveResolveModelEntry, hiveModelAssignmentBody, hiveCatalogToEntries, hiveMergeCatalogEntries, hiveGroupEntriesByProvider, hiveEntryDisplayLabel, hiveResolveModelLabel, hiveGroupTimeline, hiveToggleAgentExpanded, HIVE_TURN_OPEN, hiveTurnInit, hiveTurnPatch, hiveTurnAddTool, hiveTurnFinishTool, hiveTurnAppendText, hiveTurnFold, hiveTurnError, hiveTurnDigestBody, hiveLastOpenTurn, hiveActivityPreview, hiveGroupUnseen, hivePlanDeliveries, hiveParseWorkItems, hiveApplyWorkItems, hiveParseScratchOps, hiveScratchApply, hiveScratchSections, hiveScrubMarkers, hiveBuildStandingHeader, hiveFormatWorkItems, hiveClipHead, hiveTruncatePayload, hiveCapTimeline, hiveLastProfileEntry, hiveMemberStatus, hiveStatusTone, hiveStatusLabel, hiveStatusGlyph, hiveStatusBusy, hiveTaskStatusLabel, hiveTaskStatusTone, hiveSortTasks, hiveCardKind, hiveTimelineToCards, hiveActivityCards, hiveFilterCards, hiveBatchDeltas,  hiveCardTitle,  hiveOrderMembers, hiveApplyLeader, hiveCollapseLeaders, hiveLeaderBadge, hiveRosterSummary, hiveRoomStatus, hiveWorkSummary, hiveOpenItemCount, hiveLastActivityTs, hiveNeedsSession, HIVE_TIMELINE_MEM, HIVE_TIMELINE_KEEP, HIVE_PAYLOAD_MAX, HIVE_DELTA_WINDOW_MS, HIVE_ACTIVITY_KINDS }`
 )
 const {
   hiveParseCoordination,
@@ -94,6 +94,7 @@ const {
   hiveWorkSummary,
   hiveOpenItemCount,
   hiveLastActivityTs,
+  hiveNeedsSession,
   HIVE_TIMELINE_MEM,
   HIVE_TIMELINE_KEEP,
   HIVE_PAYLOAD_MAX,
@@ -870,6 +871,23 @@ console.log('hiveApplyLeader (F-10: the room has exactly one team leader)')
   deep('an empty roster is fine', hiveApplyLeader([], 'forge', true), [])
   deep('a malformed entry cannot throw', hiveApplyLeader([null, { profile: 'x' }], 'x', true).length, 2)
   deep('a member already off stays off', hiveApplyLeader(room, 'forge', false).filter((m) => m.leader === true).map((m) => m.profile), ['atlas'])
+
+console.log('hiveNeedsSession (session recovery: the post-restart state is normal, not an error)')
+{
+  assert('a live member needs nothing', hiveNeedsSession({ profile: 'forge', sessionId: 's1' }) === false)
+  assert('a null sessionId needs recovery', hiveNeedsSession({ profile: 'arch', sessionId: null }) === true)
+  assert('a missing sessionId needs recovery', hiveNeedsSession({ profile: 'you' }) === true)
+  assert('no member is not a recovery case', hiveNeedsSession(null) === false)
+  assert('any truthy member without a sessionId counts (callers pass members)', hiveNeedsSession({ profile: 'forge' }) === true)
+  assert('relay to a session-less member auto-recovers instead of warning',
+    src.includes('hiveRecoverMember(member.profile)') && src.includes('had no live session — started a fresh one'))
+  assert('Start-all recovers every session-less member and reports once',
+    src.includes('async function hiveRecoverAll()') && src.includes('Started ${started} session(s) — room is live.'))
+  assert('Start-all button exists and is honest when the room is live',
+    src.includes('HiveStartAllButton') && src.includes('Every member already has a live session'))
+  assert('detail card leads with a Start session action when session-less',
+    src.includes("children: 'Start session'") && src.includes('data-ts-start-session'))
+}
 
   // Mint-as-leader: the Add-agent popover can pin the new member as it lands.
   // Same rule, one write — the new member is appended first, then the exclusive

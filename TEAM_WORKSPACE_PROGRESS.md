@@ -1039,3 +1039,11 @@ $ node smoke-render.mjs -> ALL PASS 86/86
 $ node f10-probe.mjs -> ALL PASS 33/33 (§E: legacy two-leader room -> one crown)
 $ node f10-probe.mjs --plugin ad2b9bc -> FAIL 3/33 (crowns=2, both pinned, persistedLeads=atlas,forge)
 ```
+
+## Session recovery (A4) — 2026-10-20
+- Relay to a session-less member auto-mints a fresh session (single recovery path via hiveRecoverMember) and reports it on the timeline; warning survives only as mint-failure.
+- Room toolbar gains "Start all": mints sessions for every session-less member, sequentially, one system line on completion; disabled with the reason when the room is live.
+- Agent-detail card leads with a primary "Start session" button when the member has no session.
+- Recovery preserves position/crown/model/browser/muted and is quiet (no false "joined the room").
+- Suites: test.cjs 361/361, smoke-render 86/86, css-layout-probe 1512/1200/1000/700 ALL PASS.
+- Authorship: forge run 3 partial diff (recovery plumbing + Start-session button, uncommitted) adopted by ATLAS, who implemented Start-all + auto-mint-on-relay + tests (user-directed takeover).
