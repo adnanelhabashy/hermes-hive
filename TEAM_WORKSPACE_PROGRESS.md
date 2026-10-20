@@ -1047,3 +1047,10 @@ $ node f10-probe.mjs --plugin ad2b9bc -> FAIL 3/33 (crowns=2, both pinned, persi
 - Recovery preserves position/crown/model/browser/muted and is quiet (no false "joined the room").
 - Suites: test.cjs 361/361, smoke-render 86/86, css-layout-probe 1512/1200/1000/700 ALL PASS.
 - Authorship: forge run 3 partial diff (recovery plumbing + Start-session button, uncommitted) adopted by ATLAS, who implemented Start-all + auto-mint-on-relay + tests (user-directed takeover).
+
+## Relay chain: progress-renewal + terminal delivery — 2026-10-20
+- User directive: "i dont want the work to stop unless the work is finished."
+- Depth cap no longer drops the whole delivery: at exactly maxHops the message arrives as a terminal hop (recipient sees it; their onward relays are cut via unbounded session depth).
+- Progress renewal: a turn that produced real effects (work cards or scratchpad writes) resets its session's hop budget — productive chains run to completion; only no-progress ping-pong ever meets the cap.
+- System line reworded: final relays "continue only if the reply shows progress."
+- Suites: 364/364, 86/86, probe 1512/1200/1000/700 ALL PASS.

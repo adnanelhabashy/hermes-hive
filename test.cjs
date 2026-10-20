@@ -523,8 +523,11 @@ console.log('hivePlanDeliveries (the routing seam)')
   assert('the user still reaches muted members', user.deliveries.some((d) => d.target === 'quiet'))
 
   const deep3 = hivePlanDeliveries({ from: 'builder', parsed: bare, members, swarm: true, hops: 3 })
-  deep('hop budget stops a runaway chain', deep3.deliveries, [])
-  assert('hop exhaustion is reported', deep3.dropped.some((d) => d.reason === 'hop-budget'))
+  assert('at the depth cap the message still ARRIVES (as a final hop)', deep3.deliveries.length === 1 && deep3.deliveries[0].target === 'frontier')
+  assert('the final hop is marked terminal', deep3.deliveries.every((d) => d.terminal === true))
+  assert('beyond the cap is held and reported', hivePlanDeliveries({ from: 'builder', parsed: bare, members, swarm: true, hops: 4 }).dropped.some((d) => d.reason === 'hop-budget'))
+  assert('terminal hops dead-end the chain (session depth becomes unbounded)',
+    src.includes('opts.terminal ? Infinity'))
 
   const hop = hivePlanDeliveries({ from: 'builder', parsed: bare, members, swarm: true, hops: 0 })
   assert('deliveries carry an incremented hop count', hop.deliveries.every((d) => d.hops === 1))
@@ -887,6 +890,8 @@ console.log('hiveNeedsSession (session recovery: the post-restart state is norma
     src.includes('HiveStartAllButton') && src.includes('Every member already has a live session'))
   assert('detail card leads with a Start session action when session-less',
     src.includes("children: 'Start session'") && src.includes('data-ts-start-session'))
+  assert('a turn that produces work renews the chain budget (work stops when finished, not at a counter)',
+    src.includes('const progressed =') && src.includes('_hiveHops.set(e.session_id, 0)'))
 }
 
   // Mint-as-leader: the Add-agent popover can pin the new member as it lands.

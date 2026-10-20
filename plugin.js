@@ -728,8 +728,14 @@ function hivePlanDeliveries({
     if (!m) return dropped.push({ target: key, reason: 'not-in-room' })
     if (m.muted && !fromUser) return dropped.push({ target: key, reason: 'muted' })
     if (!fromUser && !swarm) return dropped.push({ target: key, reason: 'swarm-off' })
-    if (!fromUser && hops >= maxHops) return dropped.push({ target: key, reason: 'hop-budget' })
-    deliveries.push({ target: key, text: body, kind, ask: ask === true, hops: hops + 1 })
+    if (!fromUser && hops > maxHops) return dropped.push({ target: key, reason: 'hop-budget' })
+    // Depth-cap semantics: at exactly maxHops the message still ARRIVES, but
+    // marked terminal — the recipient can act on it; only its ability to
+    // relay further is cut. Dropping the whole delivery here (the old
+    // behavior) stranded real work mid-chain with the recipient never
+    // knowing they were asked something.
+    const terminal = !fromUser && hops >= maxHops
+    deliveries.push({ target: key, text: body, kind, ask: ask === true, terminal, hops: hops + 1 })
   }
 
   for (const r of (parsed && parsed.relays) || []) push(r.target, r.text, 'relay', r.ask)
@@ -1449,7 +1455,10 @@ async function hiveDeliverTo(member, text, opts = {}) {
     ask: opts.ask === true,
     scratchMax: HIVE_SCRATCH_INJECT_MAX
   })
-  _hiveHops.set(member.sessionId, opts.system === true ? 0 : Number(opts.hops) || 0)
+  // Terminal deliveries dead-end the chain: the session's inherited depth
+  // becomes unbounded so any relay it later emits exceeds maxHops and is
+  // held. One final hop arrives; nothing bounces past it.
+  _hiveHops.set(member.sessionId, opts.system === true ? 0 : (opts.terminal ? Infinity : (Number(opts.hops) || 0)))
   const busy = member.status === 'streaming' || member.status === 'thinking' || member.status === 'tool'
   const queued = opts.queued === true || busy
   if (queued && !opts.system) hiveMarkStatus(member.sessionId, 'queued') // honest chip: queued behind current turn
@@ -1473,7 +1482,11 @@ async function hiveRunPlan(plan, from) {
     if (d.kind !== 'broadcast') {
       hiveAppendTimeline({ from, kind: 'relay', text: d.text, to: d.target })
     }
-    await hiveDeliverTo(target, d.text, { from, ask: d.ask, hops: d.hops })
+    await hiveDeliverTo(target, d.text, { from, ask: d.ask, hops: d.hops, terminal: d.terminal === true })
+  }
+  const finals = plan.deliveries.filter((d) => d.terminal)
+  if (finals.length) {
+    hiveAppendTimeline({ from: 'system', kind: 'system', text: `🔗 delivered ${finals.length} final relay(s) from @${from} — chain depth limit reached; they arrived, and continue only if the reply shows progress`, to: null })
   }
   const held = plan.dropped.filter((d) => d.reason === 'hop-budget' || d.reason === 'fanout-cap')
   if (held.length) {
@@ -1549,7 +1562,8 @@ async function hiveHandleAssistantDone(e, content) {
   const from = hiveNormalize(member.profile)
 
   // Shared memory first, so a teammate reached below already sees the update.
-  hiveApplyScratchOps(from, hiveParseScratchOps(finalText))
+  const scratchOps = hiveParseScratchOps(finalText)
+  hiveApplyScratchOps(from, scratchOps)
 
   // Work items next: they turn "check my work" from a hope into routed state.
   const work = hiveApplyWorkItems($hiveTasks.get(), {
@@ -1571,6 +1585,13 @@ async function hiveHandleAssistantDone(e, content) {
   // The work-item effects become timeline cards (Task/Done/Review) — real
   // state changes only, appended after the reply they came from.
   hiveEmitWorkCards(work.cards, from)
+
+  // Progress renewal: a turn that changed real state — work cards or
+  // scratchpad writes — earns a FRESH hop budget. Productive chains run to
+  // completion; only no-progress ping-pong accumulates depth and ever meets
+  // the cap. Work stops when the work is finished, not when a counter trips.
+  const progressed = (work.cards && work.cards.length > 0) || scratchOps.some((op) => op && op.body)
+  if (progressed) _hiveHops.set(e.session_id, 0)
 
   const plan = hivePlanDeliveries({
     from,
