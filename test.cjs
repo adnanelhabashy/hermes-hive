@@ -892,6 +892,12 @@ console.log('hiveNeedsSession (session recovery: the post-restart state is norma
     src.includes("children: 'Start session'") && src.includes('data-ts-start-session'))
   assert('a turn that produces work renews the chain budget (work stops when finished, not at a counter)',
     src.includes('const progressed =') && src.includes('_hiveHops.set(e.session_id, 0)'))
+  assert('warn token rides the host theme, no hardcoded hex ramp',
+    src.includes('--ts-warn:var(--ui-yellow)') && !src.includes('--ts-warn:#'))
+  assert('elevation shadows are one theme-adaptive color-mix rule, no hand-split dark duplicate',
+    src.includes('color-mix(in srgb,var(--ui-base) 24%,transparent)') && !src.includes(':root:not(.dark) .ts-sheet'))
+  assert('disabled controls say why (team full / saving / name first / no session)',
+    src.includes('Team is full — ${HIVE_MAX_MEMBERS} members max') && src.includes('Name the room first') && src.includes('No live session to open'))
 }
 
   // Mint-as-leader: the Add-agent popover can pin the new member as it lands.

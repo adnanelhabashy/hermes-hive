@@ -249,14 +249,12 @@ async function inSandbox() {
   // a theme var, so both themes are correct by construction.
   const HEX_OK = ['#b1730f', '#1f5fd0', '#e0a94c', '#7aa2ff']
   const hexHits = cssText.match(/#[0-9a-fA-F]{3,8}\b/g) || []
-  ok('the only hex literals are the ramp tokens P-16 declares',
-    hexHits.length > 0 && hexHits.every((h) => HEX_OK.includes(h.toLowerCase()))
-      && cssText.includes('--ts-warn:#b1730f;--ts-info:#1f5fd0;')
-      && cssText.includes('.dark .ts-workspace{--ts-warn:#e0a94c;--ts-info:#7aa2ff}'),
+  ok('the style block carries zero hex literals (audit fix: theme tokens only)',
+    hexHits.length === 0 && cssText.includes('--ts-warn:var(--ui-yellow)'),
     hexHits)
   const rgbHits = cssText.match(/\b(rgb|rgba|hsl|hsla)\([^)]*\)/g) || []
-  ok('the only colour functions are the two elevation shadows P-14 declares',
-    rgbHits.length === 2 && rgbHits.every((s) => /^rgba\((0,0,0|24,20,40),\./.test(s)),
+  ok('the style block carries zero colour functions (elevation rides color-mix)',
+    rgbHits.length === 0 && cssText.includes('color-mix(in srgb,var(--ui-base) 24%,transparent)'),
     rgbHits)
   const vars = [...new Set((cssText.match(/var\((--[a-z0-9-]+)/g) || []).map((s) => s.replace('var(', '')))]
   const unknown = vars.filter((v) => !UI_VARS.has(v) && !v.startsWith('--ts-'))
