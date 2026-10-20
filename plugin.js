@@ -2203,7 +2203,7 @@ const HIVE_TS_CSS = `.ts-workspace{
   --ts-accent:var(--ui-accent);
   /* semantic states, theme-aware by construction (P-16) */
   --ts-ok:var(--ui-green);--ts-bad:var(--ui-red);
-  --ts-warn:#b1730f;--ts-info:#1f5fd0;--ts-idle:var(--ui-text-tertiary);
+  --ts-warn:var(--ui-yellow);--ts-idle:var(--ui-text-tertiary);
   /* P1.5 F-7: micro-meta the user must READ — work-item meta incl. its duration
      ("0s"), strip meta, empty-state hints, the mention picker's model — is
      pinned to the --ui-text-tertiary token. --ui-text-quaternary is 36% of the
@@ -2211,7 +2211,6 @@ const HIVE_TS_CSS = `.ts-workspace{
      reading level. --ts-idle remains the semantic idle-state tone (status text),
      which is why those meta rules name the tertiary token directly instead. */
   position:relative;display:grid;grid-template-columns:var(--ts-team-w) minmax(420px,1fr) var(--ts-right-w);grid-template-rows:var(--ts-toolbar-h) minmax(0,1fr) auto;height:100%;min-height:0;min-width:0;overflow:hidden;background:var(--ui-surface-background);color:var(--ui-text-primary)}
-.dark .ts-workspace{--ts-warn:#e0a94c;--ts-info:#7aa2ff}
 /* CJK: the Latin 13px body is below the CJK floor of 14px, so body copy steps up
    when the app is set to a CJK language. */
 [lang^="ko"] .ts-workspace,[lang^="ja"] .ts-workspace,[lang^="zh"] .ts-workspace{--ts-f-body:14px;--ts-lh-body:22px;--ts-f-meta:12px;--ts-lh-meta:18px}
@@ -2306,9 +2305,10 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-mention-row:hover{background:var(--ui-row-hover-background)}
 .ts-mention-row[data-active="true"]{background:var(--ui-bg-tertiary);box-shadow:inset 2px 0 0 var(--ts-accent)}
 .ts-mention-model{margin-left:auto;font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);font-weight:400;color:var(--ui-text-tertiary)}
-/* one elevation rule, floating surfaces only (P-14) */
-.ts-sheet,.ts-addpop,.ts-mention{box-shadow:0 8px 24px -12px rgba(0,0,0,.45)}
-:root:not(.dark) .ts-sheet,:root:not(.dark) .ts-addpop,:root:not(.dark) .ts-mention{box-shadow:0 8px 24px -12px rgba(24,20,40,.14)}
+/* one elevation rule, floating surfaces only (P-14) — theme-adaptive shadow:
+   the old hand-split dark/light pair collapses into a single color-mix on the
+   foreground token (audit fix). */
+.ts-sheet,.ts-addpop,.ts-mention{box-shadow:0 8px 24px -12px color-mix(in srgb,var(--ui-base) 24%,transparent)}
 /* Add-agent roster popover (F-P1-R1). It mounts in the dock — the LAST row of
    the team column and of the overlay sheet. 'right-0' anchored a 16rem box to
    the right edge of a ~62px button, i.e. off the left of both the column and the
@@ -2533,7 +2533,7 @@ function HiveModelSubmenu({ m }) {
         value: currentKey, disabled: busy,
         onValueChange: (v) => pick(v),
         children: [
-          jsx(SelectTrigger, { className: 'h-6 w-full text-xs', children: jsx(SelectValue, { placeholder: m.modelLabel || 'Pick model' }) }),
+          jsx(SelectTrigger, { className: 'h-6 w-full text-xs', title: busy ? 'Saving — model locked for this edit' : 'Change model', 'aria-label': busy ? 'Saving, model locked' : 'Change model', children: jsx(SelectValue, { placeholder: m.modelLabel || 'Pick model' }) }),
           jsx(SelectContent, {
             className: 'max-h-72',
             children: [
@@ -3083,7 +3083,7 @@ function HiveCreateForm({ onDone, onCancel }) {
     error && jsx('div', { className: 'text-destructive', style: HIVE_T.sm, children: error }),
     jsxs('div', { className: 'flex items-center justify-between', children: [
       jsx(Button, { variant: 'ghost', size: 'sm', onClick: onCancel, disabled: busy, children: 'Cancel' }),
-      jsx(Button, { size: 'sm', onClick: () => void submit(), disabled: busy || !trimmed, children: status === 'saving' ? 'Creating…' : 'Create & join' })
+      jsx(Button, { size: 'sm', onClick: () => void submit(), disabled: busy || !trimmed, title: busy ? 'Creating the room…' : (!trimmed ? 'Name the room first' : 'Create the room and join it'), children: status === 'saving' ? 'Creating…' : 'Create & join' })
     ] })
   ] })
 }
@@ -3213,7 +3213,8 @@ function HiveAddMember() {
     jsx(Button, {
       variant: 'ghost', size: 'sm', onClick: toggle,
       'aria-haspopup': 'dialog', 'aria-expanded': open ? 'true' : 'false',
-      title: 'Add agent', 'aria-label': 'Add agent',
+      title: members.length >= HIVE_MAX_MEMBERS && !open ? `Team is full — ${HIVE_MAX_MEMBERS} members max. Remove one to add another.` : 'Add agent',
+      'aria-label': members.length >= HIVE_MAX_MEMBERS && !open ? `Team is full, ${HIVE_MAX_MEMBERS} members maximum` : 'Add agent',
       disabled: members.length >= HIVE_MAX_MEMBERS && !open,
       // P1.5 F-2: the label is its own node so the avatar-only column (<=1100)
       // can drop it and keep the control inside its 56/48px column; the title +
@@ -3847,7 +3848,7 @@ function TsAgentDetail({ m, status, turn }) {
         }),
         jsx(Button, {
           variant: 'outline', size: 'xs', disabled: !sessionRef,
-          title: 'Open the native sessions pane on this session',
+          title: sessionRef ? 'Open the native sessions pane on this session' : 'No live session to open',
           onClick: () => { if (sessionRef) host.navigate('/' + encodeURIComponent(sessionRef)) },
           children: 'View session'
         }),
