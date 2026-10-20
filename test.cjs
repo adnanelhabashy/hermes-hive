@@ -583,6 +583,20 @@ console.log('work items (the validation spine)')
     { from: 'builder', parsed: hiveParseWorkItems('[done #u1] shipped'), ts: 7, mkId }
   )
   assert('an empty reviewer never resolves to @default', !unassigned.routes.some((r) => r.target === 'default'))
+
+  // Audit F-1 echo guards: repeats that change no state emit no card and no
+  // new task object, so they cannot renew a relay chain forever.
+  const de = hiveApplyWorkItems(d.tasks, { from: 'builder', parsed: hiveParseWorkItems('[done #id1] echo'), ts: 8, mkId })
+  deep('a repeat [done] on a submitted task is an echo (no card)', de.cards.length, 0)
+  deep('an echo leaves task identity untouched', de.tasks[0], d.tasks[0])
+  const reEcho = hiveApplyWorkItems(d.tasks, { from: 'you', parsed: hiveParseWorkItems('[review @frontier #id1] echo'), ts: 9, mkId })
+  deep('re-asking the CURRENT reviewer while submitted is an echo', reEcho.cards.length, 0)
+  const ve = hiveApplyWorkItems(ok.tasks, { from: 'frontier', parsed: hiveParseWorkItems('[verdict #id1 pass] echo'), ts: 10, mkId })
+  deep('repeating a verdict the task already carries is an echo', ve.cards.length, 0)
+  const reAfterFail = hiveApplyWorkItems(v.tasks, { from: 'you', parsed: hiveParseWorkItems('[review @frontier #id1] please re-check'), ts: 11, mkId })
+  deep('a re-review after a FAIL still lands (status is failed, not submitted)', reAfterFail.cards.length, 1)
+  const resubmit = hiveApplyWorkItems(v.tasks, { from: 'builder', parsed: hiveParseWorkItems('[done #id1] fixed the off-by-one'), ts: 12, mkId })
+  deep('resubmission after a fail is real progress (card emitted)', resubmit.cards.length, 1)
   deep('an unreviewed submission reports back to the requester', unassigned.routes.map((r) => r.target), ['you'])
 
   const solo = hiveApplyWorkItems(
@@ -890,8 +904,8 @@ console.log('hiveNeedsSession (session recovery: the post-restart state is norma
     src.includes('HiveStartAllButton') && src.includes('Every member already has a live session'))
   assert('detail card leads with a Start session action when session-less',
     src.includes("children: 'Start session'") && src.includes('data-ts-start-session'))
-  assert('a turn that produces work renews the chain budget (work stops when finished, not at a counter)',
-    src.includes('const progressed =') && src.includes('_hiveHops.set(e.session_id, 0)'))
+  assert('renewal keys on REAL state change, not marker presence (audit F-1)',
+    src.includes('const tasksChanged =') && src.includes('t !== tasksBefore[i]') && src.includes('scratchChanged'))
   assert('warn token rides the host theme, no hardcoded hex ramp',
     src.includes('--ts-warn:var(--ui-yellow)') && !src.includes('--ts-warn:#'))
   assert('elevation shadows are one theme-adaptive color-mix rule, no hand-split dark duplicate',
