@@ -634,7 +634,10 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
 
   for (const d of (parsed && parsed.dones) || []) {
     const i = find(d.id)
-    if (i === -1) continue
+    // Echo guard (audit F-1): a repeat [done] on an already-submitted task is
+    // an echo, not progress — no card, no re-route. Resubmission stays legal
+    // from 'open' and from a 'failed' verdict.
+    if (i === -1 || next[i].status === 'submitted') continue
     next[i] = { ...next[i], status: 'submitted', artifact: d.text, ts: now }
     cards.push({
       kind: 'done', workId: d.id, owner: hiveNormalizeOpt(next[i].owner), reviewer: hiveNormalizeOpt(next[i].reviewer),
@@ -656,8 +659,11 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
 
   for (const r of (parsed && parsed.reviews) || []) {
     const i = find(r.id)
-    if (i === -1) continue
     const reviewer = hiveNormalize(r.target)
+    // Echo guard (audit F-1): re-asking the CURRENT reviewer while the work is
+    // already in review changes nothing. After a fail the status is 'failed',
+    // so a genuine re-review request still lands.
+    if (i === -1 || (next[i].reviewer === reviewer && next[i].status === 'submitted')) continue
     next[i] = { ...next[i], reviewer, ts: now }
     cards.push({
       kind: 'review', workId: r.id, owner: hiveNormalizeOpt(next[i].owner), reviewer,
@@ -676,8 +682,11 @@ function hiveApplyWorkItems(tasks, { from, parsed, ts, mkId } = {}) {
 
   for (const v of (parsed && parsed.verdicts) || []) {
     const i = find(v.id)
-    if (i === -1) continue
-    next[i] = { ...next[i], status: v.ok ? 'passed' : 'failed', ts: now }
+    // Echo guard (audit F-1): repeating a verdict the task already carries is
+    // not progress — skip card and re-route entirely.
+    const target = v.ok ? 'passed' : 'failed'
+    if (i === -1 || next[i].status === target) continue
+    next[i] = { ...next[i], status: target, ts: now }
     cards.push({
       kind: 'review', workId: v.id, owner: hiveNormalizeOpt(next[i].owner), reviewer: author,
       status: v.ok ? 'passed' : 'failed', ts: now, verdict: v.ok ? 'pass' : 'fail',
@@ -1455,34 +1464,46 @@ async function hiveDeliverTo(member, text, opts = {}) {
     ask: opts.ask === true,
     scratchMax: HIVE_SCRATCH_INJECT_MAX
   })
-  // Terminal deliveries dead-end the chain: the session's inherited depth
-  // becomes unbounded so any relay it later emits exceeds maxHops and is
-  // held. One final hop arrives; nothing bounces past it.
-  _hiveHops.set(member.sessionId, opts.system === true ? 0 : (opts.terminal ? Infinity : (Number(opts.hops) || 0)))
   const busy = member.status === 'streaming' || member.status === 'thinking' || member.status === 'tool'
   const queued = opts.queued === true || busy
   if (queued && !opts.system) hiveMarkStatus(member.sessionId, 'queued') // honest chip: queued behind current turn
+  // Commit hop/terminal depth ONLY after the submit lands (audit F-3): a
+  // failed delivery must not strand Infinity or an inflated depth on a member
+  // that never received the message.
+  const prevHops = _hiveHops.get(member.sessionId)
   try {
     await host.request('prompt.submit', {
       session_id: member.sessionId,
       text: payload,
       ...(queued && !opts.system ? { queued: true } : {})
     })
+    // Terminal deliveries dead-end the chain: the session's inherited depth
+    // becomes unbounded so any relay it later emits exceeds maxHops and is
+    // held. One final hop arrives; nothing bounces past it.
+    _hiveHops.set(member.sessionId, opts.system === true ? 0 : (opts.terminal ? Infinity : (Number(opts.hops) || 0)))
   } catch (err) {
+    if (prevHops === undefined) _hiveHops.delete(member.sessionId)
+    else _hiveHops.set(member.sessionId, prevHops)
     host.notifyError(err, `Hive: deliver to @${member.profile} failed`)
+    hiveAppendTimeline({ from: 'system', kind: 'system', text: `⚠️ relay to @${member.profile} failed — chain depth unchanged`, to: null })
   }
 }
 
 /** Execute a plan from hivePlanDeliveries: timeline first (so the room reads in
  *  causal order), then the injections. Suppressions are surfaced, never silent. */
 async function hiveRunPlan(plan, from) {
+  const vanished = []
   for (const d of plan.deliveries) {
     const target = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === d.target)
-    if (!target) continue
+    if (!target) { vanished.push(d); continue } // surfaced below, never silent (audit F-4)
     if (d.kind !== 'broadcast') {
       hiveAppendTimeline({ from, kind: 'relay', text: d.text, to: d.target })
     }
     await hiveDeliverTo(target, d.text, { from, ask: d.ask, hops: d.hops, terminal: d.terminal === true })
+  }
+  if (vanished.length) {
+    const names = vanished.slice(0, 3).map((d) => '@' + d.target).join(', ') + (vanished.length > 3 ? '…' : '')
+    hiveAppendTimeline({ from: 'system', kind: 'system', text: `⛔ skipped ${vanished.length} relay(s) from @${from} — recipient left the room (${names})`, to: null })
   }
   const finals = plan.deliveries.filter((d) => d.terminal)
   if (finals.length) {
@@ -1491,7 +1512,8 @@ async function hiveRunPlan(plan, from) {
   const held = plan.dropped.filter((d) => d.reason === 'hop-budget' || d.reason === 'fanout-cap')
   if (held.length) {
     const why = held[0].reason === 'hop-budget' ? 'relay chain reached its depth limit' : 'fan-out limit reached'
-    hiveAppendTimeline({ from: 'system', kind: 'system', text: `⛔ held ${held.length} relay(s) from @${from} — ${why}`, to: null })
+    const names = held.slice(0, 3).map((d) => '@' + d.target).join(', ') + (held.length > 3 ? '…' : '')
+    hiveAppendTimeline({ from: 'system', kind: 'system', text: `⛔ held ${held.length} relay(s) from @${from} — ${why} (cut: ${names})`, to: null })
   }
 }
 
@@ -1562,11 +1584,12 @@ async function hiveHandleAssistantDone(e, content) {
   const from = hiveNormalize(member.profile)
 
   // Shared memory first, so a teammate reached below already sees the update.
-  const scratchOps = hiveParseScratchOps(finalText)
-  hiveApplyScratchOps(from, scratchOps)
+  const scratchBefore = $hiveScratch.get()
+  const tasksBefore = $hiveTasks.get()
+  hiveApplyScratchOps(from, hiveParseScratchOps(finalText))
 
   // Work items next: they turn "check my work" from a hope into routed state.
-  const work = hiveApplyWorkItems($hiveTasks.get(), {
+  const work = hiveApplyWorkItems(tasksBefore, {
     from,
     parsed: hiveParseWorkItems(finalText),
     ts: Date.now()
@@ -1586,12 +1609,14 @@ async function hiveHandleAssistantDone(e, content) {
   // state changes only, appended after the reply they came from.
   hiveEmitWorkCards(work.cards, from)
 
-  // Progress renewal: a turn that changed real state — work cards or
-  // scratchpad writes — earns a FRESH hop budget. Productive chains run to
-  // completion; only no-progress ping-pong accumulates depth and ever meets
-  // the cap. Work stops when the work is finished, not when a counter trips.
-  const progressed = (work.cards && work.cards.length > 0) || scratchOps.some((op) => op && op.body)
-  if (progressed) _hiveHops.set(e.session_id, 0)
+  // Progress renewal (audit F-1): renew only on a REAL state change — task
+  // identity diff (no-op ops keep their references, so identity = change) or
+  // scratch content change — never on marker presence alone. Marker echoes
+  // must not mint endless chains; a session that truly changed state earns a
+  // fresh budget. Work stops when finished, not at a counter.
+  const tasksChanged = work.tasks.length !== tasksBefore.length || work.tasks.some((t, i) => t !== tasksBefore[i])
+  const scratchChanged = $hiveScratch.get() !== scratchBefore
+  if (tasksChanged || scratchChanged) _hiveHops.set(e.session_id, 0)
 
   const plan = hivePlanDeliveries({
     from,
@@ -1879,6 +1904,8 @@ async function hiveMintMember(profile, options = {}) {
 
 async function hiveRemoveMember(profile) {
   const key = hiveNormalize(profile)
+  const leaving = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === key)
+  if (leaving && leaving.sessionId) _hiveHops.delete(leaving.sessionId) // audit F-5
   const remaining = $hiveMembers.get().filter((m) => hiveNormalize(m.profile) !== key)
   // Auto-reassign browser role if the holder was removed and nobody holds it.
   if (remaining.length && !remaining.some((m) => m.browser)) {
@@ -1911,6 +1938,9 @@ async function hiveSetContextMode(profile, mode) {
 async function hiveFreshContext(profile, options = {}) {
   const key = hiveNormalize(profile)
   const prior = $hiveMembers.get().find((m) => hiveNormalize(m.profile) === key)
+  // Prune hop depth on re-mint (audit F-5): the old sessionId is orphaned by
+  // the mint; its depth entry must not linger.
+  if (prior && prior.sessionId) _hiveHops.delete(prior.sessionId)
   const contextMode = hiveNormalizeContextMode(prior && prior.contextMode)
   $hiveMembers.set($hiveMembers.get().filter((m) => hiveNormalize(m.profile) !== key))
   await hiveMintMember(key, {
@@ -2036,6 +2066,7 @@ async function hiveSetBrowser(profile, on) {
 async function hiveStopMember(profile) {
   const m = $hiveMembers.get().find((x) => hiveNormalize(x.profile) === hiveNormalize(profile))
   if (!m || !m.sessionId) return
+  _hiveHops.delete(m.sessionId) // depth belongs to the live turn, not the profile (audit F-5)
   try {
     await host.request('session.interrupt', { session_id: m.sessionId })
     // Fold the buffered tail into the turn being closed (Stop is an A4 user
@@ -2203,7 +2234,7 @@ const HIVE_TS_CSS = `.ts-workspace{
   --ts-accent:var(--ui-accent);
   /* semantic states, theme-aware by construction (P-16) */
   --ts-ok:var(--ui-green);--ts-bad:var(--ui-red);
-  --ts-warn:#b1730f;--ts-info:#1f5fd0;--ts-idle:var(--ui-text-tertiary);
+  --ts-warn:var(--ui-yellow);--ts-idle:var(--ui-text-tertiary);
   /* P1.5 F-7: micro-meta the user must READ — work-item meta incl. its duration
      ("0s"), strip meta, empty-state hints, the mention picker's model — is
      pinned to the --ui-text-tertiary token. --ui-text-quaternary is 36% of the
@@ -2211,7 +2242,6 @@ const HIVE_TS_CSS = `.ts-workspace{
      reading level. --ts-idle remains the semantic idle-state tone (status text),
      which is why those meta rules name the tertiary token directly instead. */
   position:relative;display:grid;grid-template-columns:var(--ts-team-w) minmax(420px,1fr) var(--ts-right-w);grid-template-rows:var(--ts-toolbar-h) minmax(0,1fr) auto;height:100%;min-height:0;min-width:0;overflow:hidden;background:var(--ui-surface-background);color:var(--ui-text-primary)}
-.dark .ts-workspace{--ts-warn:#e0a94c;--ts-info:#7aa2ff}
 /* CJK: the Latin 13px body is below the CJK floor of 14px, so body copy steps up
    when the app is set to a CJK language. */
 [lang^="ko"] .ts-workspace,[lang^="ja"] .ts-workspace,[lang^="zh"] .ts-workspace{--ts-f-body:14px;--ts-lh-body:22px;--ts-f-meta:12px;--ts-lh-meta:18px}
@@ -2306,9 +2336,10 @@ const HIVE_TS_CSS = `.ts-workspace{
 .ts-mention-row:hover{background:var(--ui-row-hover-background)}
 .ts-mention-row[data-active="true"]{background:var(--ui-bg-tertiary);box-shadow:inset 2px 0 0 var(--ts-accent)}
 .ts-mention-model{margin-left:auto;font-size:var(--ts-f-meta);line-height:var(--ts-lh-meta);font-weight:400;color:var(--ui-text-tertiary)}
-/* one elevation rule, floating surfaces only (P-14) */
-.ts-sheet,.ts-addpop,.ts-mention{box-shadow:0 8px 24px -12px rgba(0,0,0,.45)}
-:root:not(.dark) .ts-sheet,:root:not(.dark) .ts-addpop,:root:not(.dark) .ts-mention{box-shadow:0 8px 24px -12px rgba(24,20,40,.14)}
+/* one elevation rule, floating surfaces only (P-14) — theme-adaptive shadow:
+   the old hand-split dark/light pair collapses into a single color-mix on the
+   foreground token (audit fix). */
+.ts-sheet,.ts-addpop,.ts-mention{box-shadow:0 8px 24px -12px color-mix(in srgb,var(--ui-base) 24%,transparent)}
 /* Add-agent roster popover (F-P1-R1). It mounts in the dock — the LAST row of
    the team column and of the overlay sheet. 'right-0' anchored a 16rem box to
    the right edge of a ~62px button, i.e. off the left of both the column and the
@@ -2533,7 +2564,7 @@ function HiveModelSubmenu({ m }) {
         value: currentKey, disabled: busy,
         onValueChange: (v) => pick(v),
         children: [
-          jsx(SelectTrigger, { className: 'h-6 w-full text-xs', children: jsx(SelectValue, { placeholder: m.modelLabel || 'Pick model' }) }),
+          jsx(SelectTrigger, { className: 'h-6 w-full text-xs', title: busy ? 'Saving — model locked for this edit' : 'Change model', 'aria-label': busy ? 'Saving, model locked' : 'Change model', children: jsx(SelectValue, { placeholder: m.modelLabel || 'Pick model' }) }),
           jsx(SelectContent, {
             className: 'max-h-72',
             children: [
@@ -3083,7 +3114,7 @@ function HiveCreateForm({ onDone, onCancel }) {
     error && jsx('div', { className: 'text-destructive', style: HIVE_T.sm, children: error }),
     jsxs('div', { className: 'flex items-center justify-between', children: [
       jsx(Button, { variant: 'ghost', size: 'sm', onClick: onCancel, disabled: busy, children: 'Cancel' }),
-      jsx(Button, { size: 'sm', onClick: () => void submit(), disabled: busy || !trimmed, children: status === 'saving' ? 'Creating…' : 'Create & join' })
+      jsx(Button, { size: 'sm', onClick: () => void submit(), disabled: busy || !trimmed, title: busy ? 'Creating the room…' : (!trimmed ? 'Name the room first' : 'Create the room and join it'), children: status === 'saving' ? 'Creating…' : 'Create & join' })
     ] })
   ] })
 }
@@ -3213,7 +3244,8 @@ function HiveAddMember() {
     jsx(Button, {
       variant: 'ghost', size: 'sm', onClick: toggle,
       'aria-haspopup': 'dialog', 'aria-expanded': open ? 'true' : 'false',
-      title: 'Add agent', 'aria-label': 'Add agent',
+      title: members.length >= HIVE_MAX_MEMBERS && !open ? `Team is full — ${HIVE_MAX_MEMBERS} members max. Remove one to add another.` : 'Add agent',
+      'aria-label': members.length >= HIVE_MAX_MEMBERS && !open ? `Team is full, ${HIVE_MAX_MEMBERS} members maximum` : 'Add agent',
       disabled: members.length >= HIVE_MAX_MEMBERS && !open,
       // P1.5 F-2: the label is its own node so the avatar-only column (<=1100)
       // can drop it and keep the control inside its 56/48px column; the title +
@@ -3847,7 +3879,7 @@ function TsAgentDetail({ m, status, turn }) {
         }),
         jsx(Button, {
           variant: 'outline', size: 'xs', disabled: !sessionRef,
-          title: 'Open the native sessions pane on this session',
+          title: sessionRef ? 'Open the native sessions pane on this session' : 'No live session to open',
           onClick: () => { if (sessionRef) host.navigate('/' + encodeURIComponent(sessionRef)) },
           children: 'View session'
         }),
